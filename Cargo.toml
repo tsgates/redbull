@@ -1,0 +1,19 @@
+[package]
+name = "redbull"
+version = "0.1.0"
+edition = "2021"
+description = "A minimal menu-bar app that keeps your Mac awake (wraps caffeinate)."
+
+[[bin]]
+name = "redbull"
+path = "src/main.rs"
+
+[dependencies]
+tao = "0.35"
+tray-icon = "0.24"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"

@@ -1,0 +1,4 @@
+/target
+
+# Built app bundle (produced by ./package.sh)
+/Redbull.app
