@@ -21,6 +21,7 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 /// How long each activation keeps the Mac awake, in seconds. (1 hour)
 const DURATION_SECS: u64 = 3600;
 
+
 fn main() {
     let mut event_loop = EventLoopBuilder::new().build();
     // Accessory => no Dock icon, no menu, lives only in the menu bar.
@@ -52,15 +53,16 @@ fn main() {
         *control_flow = ControlFlow::WaitUntil(Instant::now() + Duration::from_secs(1));
 
         if let Event::NewEvents(StartCause::Init) = event {
-            tray = Some(
-                TrayIconBuilder::new()
-                    .with_menu(Box::new(menu.take().unwrap()))
-                    .with_tooltip("Redbull — your Mac is allowed to sleep")
-                    .with_icon(make_icon(false))
-                    .with_icon_as_template(true) // adapt to light/dark menu bar
-                    .build()
-                    .expect("failed to create tray icon"),
-            );
+            match TrayIconBuilder::new()
+                .with_menu(Box::new(menu.take().unwrap()))
+                .with_tooltip("Redbull — your Mac is allowed to sleep")
+                .with_icon(make_icon(false))
+                .with_icon_as_template(true) // adapt to light/dark menu bar
+                .build()
+            {
+                Ok(t) => tray = Some(t),
+                Err(e) => eprintln!("redbull: tray build FAILED: {e}"),
+            }
         }
 
         // --- Handle menu clicks -------------------------------------------
@@ -144,62 +146,74 @@ fn refresh(tray: Option<&TrayIcon>, toggle: &CheckMenuItem, expiry: Option<Insta
     }
 }
 
-/// Build a 32×32 template icon of a coffee mug. When `active`, the mug is
-/// filled and steaming; when idle it's just an outline. Drawn as a black
-/// alpha mask so macOS tints it for the light/dark menu bar automatically.
+/// Build the menu-bar icon: a lightning bolt (energy = "stay awake"), rendered
+/// as a high-resolution, anti-aliased template image so macOS downsamples it
+/// crisply on Retina and tints it for the light/dark menu bar automatically.
+///
+/// When `active` the bolt is drawn at full opacity; when idle it's dimmed —
+/// the standard macOS way to show a menu-bar item is "off".
 fn make_icon(active: bool) -> Icon {
-    const W: usize = 32;
-    const H: usize = 32;
-    let mut a = [0u8; W * H]; // alpha mask
+    // Lightning bolt outline (Feather "zap"), in a 24×24 design grid.
+    const BOLT: [(f64, f64); 6] = [
+        (13.0, 2.0),
+        (3.0, 14.0),
+        (12.0, 14.0),
+        (11.0, 22.0),
+        (21.0, 10.0),
+        (12.0, 10.0),
+    ];
 
-    let mut set = |x: i32, y: i32| {
-        if x >= 0 && x < W as i32 && y >= 0 && y < H as i32 {
-            a[y as usize * W + x as usize] = 255;
+    // Map the design grid into a high-res canvas with a small margin so the
+    // bolt nearly fills the icon's height.
+    const SCALE: f64 = 4.0;
+    const MARGIN: f64 = 2.0; // grid units of padding around the bolt's bbox
+    let (min_x, min_y) = (3.0 - MARGIN, 2.0 - MARGIN);
+    let w = ((21.0 - 3.0 + 2.0 * MARGIN) * SCALE).ceil() as usize; // ~88
+    let h = ((22.0 - 2.0 + 2.0 * MARGIN) * SCALE).ceil() as usize; // ~96
+    let poly: Vec<(f64, f64)> = BOLT
+        .iter()
+        .map(|&(x, y)| ((x - min_x) * SCALE, (y - min_y) * SCALE))
+        .collect();
+
+    let opacity = if active { 1.0 } else { 0.40 };
+
+    // Even-odd ray-cast point-in-polygon test.
+    let inside = |px: f64, py: f64| -> bool {
+        let n = poly.len();
+        let mut c = false;
+        let mut j = n - 1;
+        for i in 0..n {
+            let (xi, yi) = poly[i];
+            let (xj, yj) = poly[j];
+            if ((yi > py) != (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+                c = !c;
+            }
+            j = i;
         }
+        c
     };
 
-    // Mug body: rectangle x[6..=21], y[11..=26].
-    let (l, r, t, b) = (6i32, 21i32, 11i32, 26i32);
-    if active {
-        for y in t..=b {
-            for x in l..=r {
-                set(x, y);
+    // 4×4 supersampling per pixel for smooth anti-aliased edges.
+    let mut rgba = vec![0u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let mut hits = 0u32;
+            for sy in 0..4 {
+                for sx in 0..4 {
+                    let px = x as f64 + (sx as f64 + 0.5) / 4.0;
+                    let py = y as f64 + (sy as f64 + 0.5) / 4.0;
+                    if inside(px, py) {
+                        hits += 1;
+                    }
+                }
             }
-        }
-    } else {
-        for x in l..=r {
-            set(x, t);
-            set(x, b);
-        }
-        for y in t..=b {
-            set(l, y);
-            set(r, y);
+            let coverage = hits as f64 / 16.0;
+            let alpha = (coverage * opacity * 255.0).round() as u8;
+            let idx = (y * w + x) * 4;
+            // RGB stays black; macOS uses alpha as the template mask.
+            rgba[idx + 3] = alpha;
         }
     }
 
-    // Handle: a small "C" on the right side, both states.
-    for y in 14..=22 {
-        set(r + 4, y);
-    }
-    for x in (r + 1)..=(r + 4) {
-        set(x, 14);
-        set(x, 22);
-    }
-
-    // Steam: two short wavy columns rising from the mug when active.
-    if active {
-        for (sx, phase) in [(11i32, 0i32), (16i32, 2i32)] {
-            for y in 2..=8 {
-                let wiggle = ((y + phase) / 2) % 2; // 0/1 zig-zag
-                set(sx + wiggle, y);
-            }
-        }
-    }
-
-    // Expand alpha mask into black RGBA.
-    let mut rgba = Vec::with_capacity(W * H * 4);
-    for &alpha in a.iter() {
-        rgba.extend_from_slice(&[0, 0, 0, alpha]);
-    }
-    Icon::from_rgba(rgba, W as u32, H as u32).expect("valid icon")
+    Icon::from_rgba(rgba, w as u32, h as u32).expect("valid icon")
 }
