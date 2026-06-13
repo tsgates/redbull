@@ -1,13 +1,25 @@
 #!/usr/bin/env bash
 # Build Redbull.app — a self-contained macOS menu-bar app bundle.
+#
+# By default it builds a native release binary. To bundle a prebuilt binary
+# instead (e.g. a universal binary from release.sh), set REDBULL_BIN:
+#
+#     REDBULL_BIN=path/to/redbull ./package.sh
 set -euo pipefail
 cd "$(dirname "$0")"
 
 APP="Redbull.app"
 BIN="redbull"
+VERSION="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
 
-echo "==> Building release binary"
-cargo build --release
+if [ -n "${REDBULL_BIN:-}" ]; then
+    echo "==> Using prebuilt binary: $REDBULL_BIN"
+    SRC_BIN="$REDBULL_BIN"
+else
+    echo "==> Building release binary (native)"
+    cargo build --release
+    SRC_BIN="target/release/$BIN"
+fi
 
 echo "==> Generating app icon"
 # Regenerate AppIcon.icns from the bolt artwork if it's missing.
@@ -25,13 +37,14 @@ if [ ! -f assets/AppIcon.icns ]; then
       rm -rf Redbull.iconset )
 fi
 
-echo "==> Assembling $APP"
+echo "==> Assembling $APP (v$VERSION)"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
+cp "$SRC_BIN" "$APP/Contents/MacOS/$BIN"
+chmod +x "$APP/Contents/MacOS/$BIN"
 cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
-cat > "$APP/Contents/Info.plist" <<'PLIST'
+cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -39,8 +52,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>            <string>Redbull</string>
     <key>CFBundleDisplayName</key>     <string>Redbull</string>
     <key>CFBundleIdentifier</key>      <string>com.redbull.stayawake</string>
-    <key>CFBundleVersion</key>         <string>0.1.0</string>
-    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key>         <string>$VERSION</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleExecutable</key>      <string>redbull</string>
     <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
@@ -55,6 +68,6 @@ PLIST
 echo "==> Ad-hoc code signing"
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
 
-echo "==> Done: $(pwd)/$APP"
+echo "==> Done: $(pwd)/$APP  ($(lipo -archs "$APP/Contents/MacOS/$BIN" 2>/dev/null || echo native))"
 echo "    Run it:    open $APP"
 echo "    Install:   cp -r $APP /Applications/"
