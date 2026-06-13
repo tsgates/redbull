@@ -9,10 +9,27 @@ BIN="redbull"
 echo "==> Building release binary"
 cargo build --release
 
+echo "==> Generating app icon"
+# Regenerate AppIcon.icns from the bolt artwork if it's missing.
+if [ ! -f assets/AppIcon.icns ]; then
+    ( cd assets
+      rustc -O gen_icon.rs -o /tmp/redbull_gen_icon && /tmp/redbull_gen_icon
+      rm -rf Redbull.iconset && mkdir Redbull.iconset
+      for spec in "16 icon_16x16" "32 icon_16x16@2x" "32 icon_32x32" "64 icon_32x32@2x" \
+                  "128 icon_128x128" "256 icon_128x128@2x" "256 icon_256x256" \
+                  "512 icon_256x256@2x" "512 icon_512x512" "1024 icon_512x512@2x"; do
+          set -- $spec
+          sips -z "$1" "$1" icon_1024.png --out "Redbull.iconset/$2.png" >/dev/null
+      done
+      iconutil -c icns Redbull.iconset -o AppIcon.icns
+      rm -rf Redbull.iconset )
+fi
+
 echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "target/release/$BIN" "$APP/Contents/MacOS/$BIN"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -25,6 +42,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
     <key>CFBundleVersion</key>         <string>0.1.0</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
     <key>CFBundleExecutable</key>      <string>redbull</string>
+    <key>CFBundleIconFile</key>        <string>AppIcon</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>LSMinimumSystemVersion</key>  <string>10.13</string>
     <key>NSHighResolutionCapable</key> <true/>
