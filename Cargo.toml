@@ -9,8 +9,20 @@ name = "redbull"
 path = "src/main.rs"
 
 [dependencies]
-tao = "0.35"
-tray-icon = "0.24"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = [
+    "NSString", "NSData", "NSGeometry", "NSTimer", "NSDate", "NSThread",
+    "NSArray", "NSValue", "NSDictionary",
+] }
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication", "NSResponder", "NSView", "NSControl", "NSCell",
+    "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage",
+    "NSPopover", "NSViewController", "NSGraphics", "NSWindow",
+] }
+objc2-web-kit = { version = "0.3", features = [
+    "WKWebView", "WKWebViewConfiguration", "WKUserContentController",
+    "WKScriptMessageHandler", "WKScriptMessage",
+] }
 
 [profile.release]
 opt-level = "z"
