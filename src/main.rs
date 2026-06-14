@@ -33,7 +33,7 @@ const SECS: [u64; 7] = [0, 15 * 60, 60 * 60, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 
 const STOPS: usize = 8; // Off, 15m, 1h, 2h, 3h, 6h, 12h, ∞
 
 const POPOVER_W: f64 = 264.0;
-const POPOVER_H: f64 = 96.0;
+const POPOVER_H: f64 = 116.0;
 
 #[derive(Default)]
 struct AppState {
