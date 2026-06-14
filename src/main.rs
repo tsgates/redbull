@@ -16,9 +16,9 @@ use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSImage, NSPopover,
-    NSPopoverBehavior, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
-    NSViewController,
+    NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSFont, NSFontWeightRegular,
+    NSImage, NSPopover, NSPopoverBehavior, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
+    NSView, NSViewController,
 };
 use objc2_foundation::{MainThreadMarker, NSData, NSRect, NSRectEdge, NSSize, NSString, NSTimer};
 use objc2_web_kit::{
@@ -159,7 +159,7 @@ impl Controller {
 
         let state_str = match (active, st.expiry) {
             (false, _) => "Off".to_string(),
-            (true, Some(until)) => format!("Awake · {}", remaining_label(until)),
+            (true, Some(until)) => format!("Awake · {}", remaining_label(until).trim_start()),
             (true, None) => "Awake · ∞".to_string(),
         };
         let js = format!("window.redbullSet&&redbullSet({},{:?})", st.index, state_str);
@@ -201,6 +201,11 @@ fn build_controller(mtm: MainThreadMarker) -> Retained<Controller> {
         NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
     if let Some(button) = status_item.button(mtm) {
         button.setImagePosition(NSCellImagePosition::ImageLeft);
+        // Tabular (monospaced) digits so the countdown never changes width.
+        let font = unsafe {
+            NSFont::monospacedDigitSystemFontOfSize_weight(NSFont::systemFontSize(), NSFontWeightRegular)
+        };
+        button.setFont(Some(&font));
     }
 
     // --- WKWebView hosting the slider UI ----------------------------------
@@ -279,12 +284,19 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
 fn remaining_label(until: Instant) -> String {
     let secs = until.saturating_duration_since(Instant::now()).as_secs();
     let m = ((secs + 59) / 60).max(1);
-    if m >= 60 {
-        format!("{}h", m / 60)
+    let (n, unit) = if m >= 60 {
+        (m / 60, 'h')
     } else if m >= 10 {
-        format!("{}m", (((m + 2) / 5) * 5).min(55))
+        ((((m + 2) / 5) * 5).min(55), 'm')
     } else {
-        format!("{}m", m)
+        (m, 'm')
+    };
+    // Pad to a fixed two-digit field with a figure space (U+2007, digit-width
+    // and invisible) so the menu-bar item never changes width as time ticks.
+    if n < 10 {
+        format!("\u{2007}{n}{unit}")
+    } else {
+        format!("{n}{unit}")
     }
 }
 

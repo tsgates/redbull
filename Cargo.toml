@@ -17,7 +17,7 @@ objc2-foundation = { version = "0.3", features = [
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication", "NSResponder", "NSView", "NSControl", "NSCell",
     "NSStatusBar", "NSStatusItem", "NSStatusBarButton", "NSImage",
-    "NSPopover", "NSViewController", "NSGraphics", "NSWindow",
+    "NSPopover", "NSViewController", "NSGraphics", "NSWindow", "NSFont",
 ] }
 objc2-web-kit = { version = "0.3", features = [
     "WKWebView", "WKWebViewConfiguration", "WKUserContentController",
