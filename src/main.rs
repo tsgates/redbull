@@ -20,7 +20,9 @@ use objc2_app_kit::{
     NSImage, NSPopover, NSPopoverBehavior, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
     NSView, NSViewController,
 };
-use objc2_foundation::{MainThreadMarker, NSData, NSRect, NSRectEdge, NSSize, NSString, NSTimer};
+use objc2_foundation::{
+    MainThreadMarker, NSData, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSTimer,
+};
 use objc2_web_kit::{
     WKScriptMessage, WKScriptMessageHandler, WKUserContentController, WKWebView,
     WKWebViewConfiguration,
@@ -31,7 +33,7 @@ const SECS: [u64; 7] = [0, 15 * 60, 60 * 60, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 
 const STOPS: usize = 8; // Off, 15m, 1h, 2h, 3h, 6h, 12h, ∞
 
 const POPOVER_W: f64 = 264.0;
-const POPOVER_H: f64 = 142.0;
+const POPOVER_H: f64 = 120.0;
 
 #[derive(Default)]
 struct AppState {
@@ -211,10 +213,7 @@ fn build_controller(mtm: MainThreadMarker) -> Retained<Controller> {
     // --- WKWebView hosting the slider UI ----------------------------------
     let config = unsafe { WKWebViewConfiguration::new(mtm) };
     let ucc = unsafe { config.userContentController() };
-    let frame = NSRect::new(
-        objc2_foundation::NSPoint::new(0.0, 0.0),
-        NSSize::new(POPOVER_W, POPOVER_H),
-    );
+    let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(POPOVER_W, POPOVER_H));
     let webview =
         unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), frame, &config) };
     unsafe { webview.loadHTMLString_baseURL(&ns(HTML), None) };
@@ -423,6 +422,8 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .name{font-size:14px;font-weight:600}
 .pill{margin-left:auto;font-size:12px;padding:3px 9px;border-radius:999px;font-weight:600;background:#E24B4A;color:#26262b}
 .pill.off{background:rgba(255,255,255,.14);color:#cdcdd1}
+.x{margin-left:6px;width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#8e8e93;font-size:16px;line-height:1;cursor:pointer;border-radius:5px;font-family:inherit}
+.x:hover{background:rgba(255,255,255,.12);color:#fff}
 .sub{font-size:11px;color:#a9a9ad;margin:9px 2px 16px}
 .slider{position:relative;height:28px;margin:0 8px}
 .track{position:absolute;top:12px;left:0;right:0;height:4px;background:rgba(255,255,255,.15);border-radius:2px}
@@ -431,14 +432,12 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .thumb{position:absolute;top:5px;width:18px;height:18px;margin-left:-9px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.5)}
 .range{position:absolute;top:3px;left:-9px;width:calc(100% + 18px);height:22px;margin:0;opacity:0;cursor:pointer}
 .labels{display:flex;justify-content:space-between;margin:7px 2px 0;font-size:10px;color:#8e8e93}
-.foot{border-top:.5px solid rgba(255,255,255,.1);margin-top:12px;padding-top:7px;display:flex}
-.quit{background:transparent;border:none;color:#a9a9ad;font-size:12px;padding:3px 2px;cursor:pointer;font-family:inherit}
-.quit:hover{color:#fff}
 </style></head><body><div class="wrap">
 <div class="head">
 <span class="logo"><svg width="13" height="13" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#fff"/></svg></span>
 <span class="name">Redbull</span>
 <span class="pill off" id="pill">Off</span>
+<button class="x" onclick="post('quit')" title="Quit" aria-label="Quit">&times;</button>
 </div>
 <div class="sub">Drag to set how long your Mac stays awake</div>
 <div class="slider">
@@ -447,7 +446,6 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <input class="range" id="rng" type="range" min="0" max="7" step="1" value="0">
 </div>
 <div class="labels" id="labels"></div>
-<div class="foot"><button class="quit" onclick="post('quit')">Quit</button></div>
 </div><script>
 var LAB=["Off","15m","1h","2h","3h","6h","12h","∞"];
 var rng=document.getElementById('rng'),fill=document.getElementById('fill'),thumb=document.getElementById('thumb'),pill=document.getElementById('pill'),labels=document.getElementById('labels'),ticks=document.getElementById('ticks');
