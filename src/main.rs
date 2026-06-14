@@ -33,7 +33,7 @@ const SECS: [u64; 7] = [0, 15 * 60, 60 * 60, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 
 const STOPS: usize = 8; // Off, 15m, 1h, 2h, 3h, 6h, 12h, ∞
 
 const POPOVER_W: f64 = 264.0;
-const POPOVER_H: f64 = 120.0;
+const POPOVER_H: f64 = 96.0;
 
 #[derive(Default)]
 struct AppState {
@@ -161,7 +161,7 @@ impl Controller {
 
         let state_str = match (active, st.expiry) {
             (false, _) => "Off".to_string(),
-            (true, Some(until)) => format!("Awake · {}", remaining_label(until).trim_start()),
+            (true, Some(until)) => format!("Awake · {}", remaining_label(until)),
             (true, None) => "Awake · ∞".to_string(),
         };
         let js = format!("window.redbullSet&&redbullSet({},{:?})", st.index, state_str);
@@ -283,19 +283,12 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
 fn remaining_label(until: Instant) -> String {
     let secs = until.saturating_duration_since(Instant::now()).as_secs();
     let m = ((secs + 59) / 60).max(1);
-    let (n, unit) = if m >= 60 {
-        (m / 60, 'h')
+    if m >= 60 {
+        format!("{}h", m / 60)
     } else if m >= 10 {
-        ((((m + 2) / 5) * 5).min(55), 'm')
+        format!("{}m", (((m + 2) / 5) * 5).min(55))
     } else {
-        (m, 'm')
-    };
-    // Pad to a fixed two-digit field with a figure space (U+2007, digit-width
-    // and invisible) so the menu-bar item never changes width as time ticks.
-    if n < 10 {
-        format!("\u{2007}{n}{unit}")
-    } else {
-        format!("{n}{unit}")
+        format!("{}m", m)
     }
 }
 
@@ -424,8 +417,7 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .pill.off{background:rgba(255,255,255,.14);color:#cdcdd1}
 .x{margin-left:6px;width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#8e8e93;font-size:16px;line-height:1;cursor:pointer;border-radius:5px;font-family:inherit}
 .x:hover{background:rgba(255,255,255,.12);color:#fff}
-.sub{font-size:11px;color:#a9a9ad;margin:9px 2px 16px}
-.slider{position:relative;height:28px;margin:0 8px}
+.slider{position:relative;height:28px;margin:18px 8px 0}
 .track{position:absolute;top:12px;left:0;right:0;height:4px;background:rgba(255,255,255,.15);border-radius:2px}
 .fill{position:absolute;top:12px;left:0;height:4px;background:#E24B4A;border-radius:2px}
 .tick{position:absolute;top:9px;width:2px;height:10px;margin-left:-1px;border-radius:1px;background:rgba(255,255,255,.28)}
@@ -439,7 +431,6 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <span class="pill off" id="pill">Off</span>
 <button class="x" onclick="post('quit')" title="Quit" aria-label="Quit">&times;</button>
 </div>
-<div class="sub">Drag to set how long your Mac stays awake</div>
 <div class="slider">
 <div class="track"></div><div class="fill" id="fill"></div><div id="ticks"></div>
 <div class="thumb" id="thumb"></div>
