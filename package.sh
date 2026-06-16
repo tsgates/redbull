@@ -33,7 +33,14 @@ if [ ! -f assets/AppIcon.icns ]; then
           set -- $spec
           sips -z "$1" "$1" icon_1024.png --out "Redbull.iconset/$2.png" >/dev/null
       done
-      iconutil -c icns Redbull.iconset -o AppIcon.icns
+      # Optimize the PNG reps losslessly and hand-pack the icns (iconutil
+      # would re-encode and bloat them). Falls back to iconutil if tools absent.
+      if command -v zopflipng >/dev/null && command -v python3 >/dev/null; then
+          for f in Redbull.iconset/*.png; do zopflipng -y "$f" "$f" >/dev/null 2>&1; done
+          python3 pack_icns.py Redbull.iconset AppIcon.icns
+      else
+          iconutil -c icns Redbull.iconset -o AppIcon.icns
+      fi
       rm -rf Redbull.iconset )
 fi
 
