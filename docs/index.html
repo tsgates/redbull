@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Redbull — keep your Mac awake</title>
+<meta name="description" content="A tiny macOS menu-bar app that keeps your Mac awake. One slider, from 15 minutes to forever. Native, ~100 KB, free and open source.">
+<meta property="og:title" content="Redbull — keep your Mac awake">
+<meta property="og:description" content="A tiny macOS menu-bar app. One slider, from 15 minutes to forever.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%23E24B4A'/%3E%3Cpolygon points='54 12 18 58 49 58 46 90 82 42 51 42 54 12' fill='white'/%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0c0c0e; --bg2:#141417; --card:#16161a; --line:rgba(255,255,255,.08);
+    --tx:#ededf0; --tx2:#9a9aa2; --tx3:#6c6c74; --red:#E24B4A; --red2:#ff6450;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{background:var(--bg);color:var(--tx);font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  .btn{display:inline-flex;align-items:center;gap:8px;padding:12px 22px;border-radius:11px;font-weight:600;font-size:15px;transition:transform .12s ease,background .2s ease,border-color .2s}
+  .btn:active{transform:scale(.97)}
+  .btn-primary{background:var(--red);color:#fff}
+  .btn-primary:hover{background:var(--red2)}
+  .btn-ghost{border:1px solid var(--line);color:var(--tx)}
+  .btn-ghost:hover{border-color:rgba(255,255,255,.25);background:rgba(255,255,255,.04)}
+
+  /* nav */
+  nav{position:sticky;top:0;z-index:10;backdrop-filter:saturate(160%) blur(12px);background:rgba(12,12,14,.72);border-bottom:1px solid var(--line)}
+  nav .wrap{display:flex;align-items:center;height:62px;gap:14px}
+  .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:17px;letter-spacing:-.01em}
+  .logo{width:30px;height:30px;border-radius:8px;display:block}
+  nav .spacer{flex:1}
+  nav a.navlink{color:var(--tx2);font-size:14px;font-weight:500}
+  nav a.navlink:hover{color:var(--tx)}
+  @media(max-width:620px){nav a.navlink{display:none}}
+
+  /* hero */
+  .hero{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center;padding:84px 0 72px}
+  @media(max-width:860px){.hero{grid-template-columns:1fr;gap:48px;padding:56px 0 48px;text-align:center}}
+  .pill-tag{display:inline-block;font-size:12.5px;font-weight:600;color:var(--red2);background:rgba(226,75,74,.12);border:1px solid rgba(226,75,74,.25);padding:5px 12px;border-radius:999px;margin-bottom:22px}
+  h1{font-size:clamp(38px,6vw,60px);line-height:1.04;letter-spacing:-.03em;font-weight:800;margin-bottom:20px}
+  h1 .grad{background:linear-gradient(120deg,#ff7a5c,#E24B4A);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .lede{font-size:19px;color:var(--tx2);max-width:30ch;margin-bottom:30px}
+  @media(max-width:860px){.lede{margin-left:auto;margin-right:auto}}
+  .cta{display:flex;gap:12px;flex-wrap:wrap}
+  @media(max-width:860px){.cta{justify-content:center}}
+  .meta{margin-top:18px;font-size:13px;color:var(--tx3)}
+  .meta b{color:var(--tx2);font-weight:600}
+
+  /* product shot */
+  .shot{display:flex;flex-direction:column;align-items:center;gap:0}
+  .menubar{width:100%;max-width:340px;height:30px;background:rgba(255,255,255,.06);border:1px solid var(--line);border-radius:9px 9px 0 0;display:flex;align-items:center;justify-content:flex-end;gap:14px;padding:0 12px;color:var(--tx2);font-size:12px}
+  .menubar .mb-bolt{display:flex;align-items:center;gap:5px;color:var(--tx);font-weight:600}
+  .popover{width:280px;background:#26262b;border:1px solid rgba(255,255,255,.12);border-radius:14px;padding:16px 18px 14px;margin-top:14px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+  .pv-head{display:flex;align-items:center;gap:9px;margin-bottom:16px}
+  .pv-logo{width:22px;height:22px;border-radius:6px}
+  .pv-name{font-size:14px;font-weight:600;color:#f2f2f4}
+  .pv-pill{margin-left:auto;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--red);color:#26262b}
+  .pv-x{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:#8e8e93;font-size:16px;border-radius:5px}
+  .pv-slider{position:relative;height:24px;margin:0 6px}
+  .pv-track{position:absolute;top:10px;left:0;right:0;height:4px;background:rgba(255,255,255,.15);border-radius:2px}
+  .pv-fill{position:absolute;top:10px;left:0;width:43%;height:4px;background:var(--red);border-radius:2px}
+  .pv-tick{position:absolute;top:7px;width:2px;height:10px;margin-left:-1px;border-radius:1px;background:rgba(255,255,255,.28)}
+  .pv-thumb{position:absolute;top:3px;left:43%;width:18px;height:18px;margin-left:-9px;background:#fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.5)}
+  .pv-labels{display:flex;justify-content:space-between;margin:8px 4px 0;font-size:10px;color:#8e8e93}
+
+  /* sections */
+  section{padding:72px 0}
+  .eyebrow{color:var(--red2);font-weight:700;font-size:13px;letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;text-align:center}
+  h2{font-size:clamp(28px,4vw,40px);letter-spacing:-.02em;font-weight:800;text-align:center;margin-bottom:14px}
+  .sub{color:var(--tx2);font-size:17px;text-align:center;max-width:52ch;margin:0 auto 48px}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media(max-width:820px){.grid{grid-template-columns:1fr 1fr}}
+  @media(max-width:520px){.grid{grid-template-columns:1fr}}
+  .feat{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:26px 24px}
+  .feat .ic{width:40px;height:40px;border-radius:10px;background:rgba(226,75,74,.12);display:flex;align-items:center;justify-content:center;margin-bottom:16px;font-size:20px}
+  .feat h3{font-size:17px;font-weight:700;margin-bottom:7px;letter-spacing:-.01em}
+  .feat p{color:var(--tx2);font-size:14.5px}
+
+  /* how / code */
+  .panel{background:var(--bg2);border:1px solid var(--line);border-radius:20px;padding:40px;display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}
+  @media(max-width:760px){.panel{grid-template-columns:1fr;padding:28px}}
+  .panel h2{text-align:left;margin-bottom:16px}
+  .panel p{color:var(--tx2);font-size:16px;margin-bottom:12px}
+  code,.code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  .code{display:block;background:#0a0a0c;border:1px solid var(--line);border-radius:12px;padding:18px 20px;color:#d8d8dc;font-size:13.5px;line-height:1.9;overflow-x:auto}
+  .code .c{color:#6c6c74}
+  .code .k{color:var(--red2)}
+
+  /* steps */
+  .steps{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;counter-reset:s}
+  @media(max-width:760px){.steps{grid-template-columns:1fr}}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px}
+  .step .n{counter-increment:s;width:30px;height:30px;border-radius:8px;background:var(--red);color:#fff;font-weight:700;display:flex;align-items:center;justify-content:center;margin-bottom:14px}
+  .step .n::before{content:counter(s)}
+  .step h3{font-size:16px;margin-bottom:6px}
+  .step p{color:var(--tx2);font-size:14px}
+  .step code{color:#d8d8dc;background:#0a0a0c;border:1px solid var(--line);border-radius:6px;padding:1px 6px;font-size:13px}
+
+  /* final cta */
+  .final{text-align:center;background:linear-gradient(160deg,#1b1418,#121215);border:1px solid var(--line);border-radius:24px;padding:64px 28px}
+  .final h2{margin-bottom:12px}
+  .final .sub{margin-bottom:28px}
+
+  footer{border-top:1px solid var(--line);padding:34px 0;color:var(--tx3);font-size:13.5px}
+  footer .wrap{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+  footer .spacer{flex:1}
+  footer a{color:var(--tx2)}footer a:hover{color:var(--tx)}
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute"><defs>
+  <linearGradient id="sq" x1="0" y1="0" x2="1" y2="1">
+    <stop offset="0" stop-color="#ff5a3c"/><stop offset="1" stop-color="#b21226"/>
+  </linearGradient>
+</defs></svg>
+
+<nav><div class="wrap">
+  <a class="brand" href="#top">
+    <svg class="logo" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="url(#sq)"/><polygon points="54 12 18 58 49 58 46 90 82 42 51 42 54 12" fill="#fff"/></svg>
+    Redbull
+  </a>
+  <div class="spacer"></div>
+  <a class="navlink" href="#features">Features</a>
+  <a class="navlink" href="#how">How it works</a>
+  <a class="navlink" href="#install">Install</a>
+  <a class="navlink" href="https://github.com/tsgates/redbull">GitHub</a>
+  <a class="btn btn-primary" href="https://github.com/tsgates/redbull/releases/latest">Download</a>
+</div></nav>
+
+<a id="top"></a>
+<header class="wrap hero">
+  <div>
+    <span class="pill-tag">⚡ macOS menu-bar utility</span>
+    <h1>Keep your Mac <span class="grad">awake.</span></h1>
+    <p class="lede">A tiny menu-bar app with one slider — from 15 minutes to forever. No windows, no fuss.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="https://github.com/tsgates/redbull/releases/latest">↓ Download for macOS</a>
+      <a class="btn btn-ghost" href="https://github.com/tsgates/redbull">View source</a>
+    </div>
+    <p class="meta"><b>Apple Silicon</b> · <b>~100 KB</b> · built in Rust · free &amp; open source</p>
+  </div>
+
+  <div class="shot">
+    <div class="menubar">
+      <span class="mb-bolt">
+        <svg width="13" height="13" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="currentColor"/></svg>
+        2h
+      </span>
+      <span>🔋</span><span>🔍</span><span>9:41</span>
+    </div>
+    <div class="popover">
+      <div class="pv-head">
+        <svg class="pv-logo" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="url(#sq)"/><polygon points="54 12 18 58 49 58 46 90 82 42 51 42 54 12" fill="#fff"/></svg>
+        <span class="pv-name">Redbull</span>
+        <span class="pv-pill">Awake · 2h</span>
+        <span class="pv-x">&times;</span>
+      </div>
+      <div class="pv-slider">
+        <div class="pv-track"></div><div class="pv-fill"></div>
+        <div class="pv-tick" style="left:0"></div><div class="pv-tick" style="left:14.3%"></div><div class="pv-tick" style="left:28.6%"></div><div class="pv-tick" style="left:42.9%"></div><div class="pv-tick" style="left:57.1%"></div><div class="pv-tick" style="left:71.4%"></div><div class="pv-tick" style="left:85.7%"></div><div class="pv-tick" style="left:100%"></div>
+        <div class="pv-thumb"></div>
+      </div>
+      <div class="pv-labels"><span>Off</span><span>15m</span><span>1h</span><span>2h</span><span>3h</span><span>6h</span><span>12h</span><span>∞</span></div>
+    </div>
+  </div>
+</header>
+
+<section id="features" class="wrap">
+  <div class="eyebrow">Why Redbull</div>
+  <h2>Small. Native. Effortless.</h2>
+  <p class="sub">Everything you need to stop your Mac from sleeping — and nothing you don't.</p>
+  <div class="grid">
+    <div class="feat"><div class="ic">🎚️</div><h3>One slider</h3><p>Drag from <b>Off</b> to <b>∞</b>. The whole control is a single tick slider — no menus to dig through.</p></div>
+    <div class="feat"><div class="ic">⏱️</div><h3>Sensible presets</h3><p>15 minutes, 1 / 2 / 3 / 6 / 12 hours, or indefinitely. Snaps right to the stop you want.</p></div>
+    <div class="feat"><div class="ic">⚡</div><h3>Live countdown</h3><p>The menu-bar bolt shows the time remaining at a glance, with a fixed width so it never jitters.</p></div>
+    <div class="feat"><div class="ic">🪶</div><h3>Featherweight</h3><p>A ~100&nbsp;KB native binary in Rust + AppKit. ~0% CPU when idle. No Electron, no daemon.</p></div>
+    <div class="feat"><div class="ic">🔌</div><h3>Zero config</h3><p>No account, no login item, no preferences. Launch it and it lives quietly in your menu bar.</p></div>
+    <div class="feat"><div class="ic">🔓</div><h3>Open source</h3><p>Built on the system <code>caffeinate</code> tool. Read every line — nothing hidden.</p></div>
+  </div>
+</section>
+
+<section id="how" class="wrap">
+  <div class="panel">
+    <div>
+      <h2>Just <span style="color:var(--red2)">caffeinate</span>, made pleasant.</h2>
+      <p>macOS already ships a power-assertion tool. Redbull is a clean front-end for it — pick a duration and it runs:</p>
+      <p style="color:var(--tx3);font-size:14px">Display + idle sleep are held for the chosen time, then released automatically.</p>
+    </div>
+    <div>
+      <span class="code"><span class="c"># keep display + system awake for 2 hours</span><br>$ <span class="k">caffeinate</span> -d -i -t 7200</span>
+    </div>
+  </div>
+</section>
+
+<section id="install" class="wrap">
+  <div class="eyebrow">Get started</div>
+  <h2>Up and running in a minute</h2>
+  <p class="sub">Apple Silicon Mac, macOS 10.13+. Two ways to install.</p>
+  <div class="steps">
+    <div class="step"><div class="n"></div><h3>Download</h3><p>Grab the latest <code>.dmg</code> from the <a href="https://github.com/tsgates/redbull/releases/latest" style="color:var(--red2)">releases page</a>.</p></div>
+    <div class="step"><div class="n"></div><h3>Drag to Applications</h3><p>Open the disk image and drop <b>Redbull</b> into your Applications folder.</p></div>
+    <div class="step"><div class="n"></div><h3>First launch</h3><p>Right-click → <b>Open</b> once (it's ad-hoc signed), then click the ⚡ in your menu bar.</p></div>
+  </div>
+  <p style="text-align:center;margin-top:28px;color:var(--tx2);font-size:15px">Prefer to build it yourself?</p>
+  <div style="max-width:520px;margin:12px auto 0"><span class="code">$ git <span class="k">clone</span> https://github.com/tsgates/redbull<br>$ cd redbull &amp;&amp; ./release.sh</span></div>
+</section>
+
+<section class="wrap">
+  <div class="final">
+    <svg width="64" height="64" viewBox="0 0 100 100" style="margin-bottom:18px"><rect width="100" height="100" rx="24" fill="url(#sq)"/><polygon points="54 12 18 58 49 58 46 90 82 42 51 42 54 12" fill="#fff"/></svg>
+    <h2>Stay awake.</h2>
+    <p class="sub">Free, tiny, and out of your way.</p>
+    <a class="btn btn-primary" href="https://github.com/tsgates/redbull/releases/latest">↓ Download Redbull</a>
+  </div>
+</section>
+
+<footer><div class="wrap">
+  <span>Redbull — keep your Mac awake</span>
+  <span class="spacer"></span>
+  <a href="https://github.com/tsgates/redbull">GitHub</a>
+  <a href="https://github.com/tsgates/redbull/releases/latest">Releases</a>
+  <span style="color:var(--tx3)">Built with Rust 🦀</span>
+</div></footer>
+
+</body>
+</html>
