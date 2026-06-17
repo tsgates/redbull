@@ -669,6 +669,8 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .auto:hover{color:#fff;border-color:rgba(255,255,255,.32)}
 .auto.on{background:#E24B4A;border-color:transparent;color:#fff}
 .auto svg{display:block}
+.auto.on svg{transform-origin:center;animation:rbpulse 1.1s ease-in-out infinite}
+@keyframes rbpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
 .x{margin-left:6px;width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#8e8e93;font-size:16px;line-height:1;cursor:pointer;border-radius:5px;font-family:inherit}
 .x:hover{background:rgba(255,255,255,.12);color:#fff}
 .slider{position:relative;height:28px;margin:18px 8px 0}
