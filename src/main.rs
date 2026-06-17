@@ -61,8 +61,9 @@ struct AppState {
     index: usize,
     // Auto-watch mode: keep awake while coding agents are working.
     auto: bool,
-    last_active: Option<Instant>,
-    agents: Vec<String>, // distinct agent names currently running
+    agents: Vec<String>, // agent names currently counted as working
+    present: bool,       // any known agent process is running at all
+    active_since: std::collections::HashMap<String, Instant>, // name -> last time it was busy
     prev_cpu: std::collections::HashMap<i32, f64>, // pid -> CPU seconds at last sample
     prev_net: std::collections::HashMap<i32, u64>, // pid -> bytes in+out at last sample
     prev_sample: Option<Instant>,
@@ -153,7 +154,8 @@ impl Controller {
             let mut st = self.ivars().state.borrow_mut();
             let st = &mut *st;
             st.auto = false;
-            st.last_active = None;
+            st.active_since.clear();
+            st.present = false;
             st.index = i;
             match i {
                 0 => stop(&mut st.child, &mut st.expiry),
@@ -173,10 +175,11 @@ impl Controller {
             stop(&mut st.child, &mut st.expiry); // hand control to the monitor
             st.index = 0;
             st.auto = on;
-            st.last_active = None;
+            st.active_since.clear();
             st.prev_cpu.clear();
             st.prev_net.clear();
             st.prev_sample = None;
+            st.present = false;
             if !on {
                 st.agents.clear();
             }
@@ -187,12 +190,12 @@ impl Controller {
         self.refresh();
     }
 
-    /// Auto-watch step (each tick): measure how much network I/O and CPU each
-    /// agent's process subtree used since the last sample. While any are working
-    /// (or were within the grace window) keep the Mac awake; else let it sleep.
+    /// Auto-watch step (each tick): for *each* agent, measure the network I/O and
+    /// CPU its process subtree used since the last sample. An agent is "working"
+    /// if either exceeds threshold, or it was working within the grace window.
+    /// Keep the Mac awake only while at least one agent is working.
     fn monitor(&self) {
-        use std::collections::HashMap;
-        let (agents, cpu_now) = scan_agents();
+        let (groups, cpu_now) = scan_agents(); // name -> subtree pids, pid -> cpu secs
         let net_now = net_bytes();
         let now = Instant::now();
         let mut st = self.ivars().state.borrow_mut();
@@ -204,33 +207,37 @@ impl Controller {
             .unwrap_or(1.0)
             .max(0.2);
 
-        // CPU-seconds and network bytes consumed across the agent subtrees.
-        let mut cpu_delta = 0.0f64;
-        let mut net_delta = 0u64;
-        let mut net_keep: HashMap<i32, u64> = HashMap::new();
-        for (pid, c) in &cpu_now {
-            let pc = st.prev_cpu.get(pid).copied().unwrap_or(*c); // new pid -> no delta
-            cpu_delta += (c - pc).max(0.0);
-            let b = net_now.get(pid).copied().unwrap_or(0);
-            let pb = st.prev_net.get(pid).copied().unwrap_or(b);
-            net_delta += b.saturating_sub(pb);
-            net_keep.insert(*pid, b);
+        // Per-agent activity from this sample.
+        for (name, pids) in &groups {
+            let (mut cpu_delta, mut net_delta) = (0.0f64, 0u64);
+            for pid in pids {
+                let c = cpu_now.get(pid).copied().unwrap_or(0.0);
+                let pc = st.prev_cpu.get(pid).copied().unwrap_or(c); // new pid -> no delta
+                cpu_delta += (c - pc).max(0.0);
+                let b = net_now.get(pid).copied().unwrap_or(0);
+                let pb = st.prev_net.get(pid).copied().unwrap_or(b);
+                net_delta += b.saturating_sub(pb);
+            }
+            let busy = net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC
+                || cpu_delta / elapsed >= BUSY_CORES;
+            if busy {
+                st.active_since.insert(name.clone(), now);
+            }
         }
-        let busy = !agents.is_empty()
-            && (net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC
-                || cpu_delta / elapsed >= BUSY_CORES);
+
+        // An agent stays "working" only while present and within the grace window.
+        st.active_since
+            .retain(|n, t| groups.contains_key(n) && now.duration_since(*t).as_secs() < GRACE_SECS);
+        let mut working: Vec<String> = st.active_since.keys().cloned().collect();
+        working.sort();
 
         st.prev_cpu = cpu_now;
-        st.prev_net = net_keep;
+        st.prev_net = net_now;
         st.prev_sample = Some(now);
-        st.agents = agents;
-        if busy {
-            st.last_active = Some(now);
-        }
-        let keep = st
-            .last_active
-            .map(|t| now.duration_since(t).as_secs() < GRACE_SECS)
-            .unwrap_or(false);
+        st.present = !groups.is_empty();
+        st.agents = working;
+
+        let keep = !st.agents.is_empty();
         if keep && st.child.is_none() {
             start(&mut st.child, &mut st.expiry, None); // indefinite while working
         } else if !keep && st.child.is_some() {
@@ -279,9 +286,9 @@ impl Controller {
             (true, Some(until)) => remaining_label(until),
             (true, None) => "∞".to_string(),
         };
-        let n = st.agents.len();
-        // Fallback text for non-active auto states (active shows count + icon).
-        let auto_text = if n == 0 { "watching" } else { "idle" };
+        let n = st.agents.len(); // agents currently working
+        // Fallback text when nothing is working (active shows count + icon).
+        let auto_text = if st.present { "idle" } else { "watching" };
         let js = format!(
             "window.redbullSet&&redbullSet({},{:?});window.redbullAuto&&redbullAuto({},{},{},{:?})",
             st.index, time_str, st.auto as u8, active as u8, n, auto_text
@@ -298,23 +305,32 @@ fn ns(s: &str) -> Retained<NSString> {
 }
 
 fn main() {
-    // Debug: `redbull scan` samples agents twice (~1.5s apart) and reports the
-    // recent network + CPU usage and whether that counts as "working".
+    // Debug: `redbull scan` samples agents twice (~1.5s apart) and reports each
+    // agent's recent network + CPU and whether it counts as "working".
     if std::env::args().any(|a| a == "scan") {
-        let (names, ca) = scan_agents();
+        let (groups, ca) = scan_agents();
         let na = net_bytes();
         std::thread::sleep(Duration::from_millis(1500));
         let (_, cb) = scan_agents();
         let nb = net_bytes();
-        let (mut cpu, mut net) = (0.0f64, 0u64);
-        for (pid, c) in &cb {
-            cpu += (c - ca.get(pid).copied().unwrap_or(*c)).max(0.0);
-            let b = nb.get(pid).copied().unwrap_or(0);
-            net += b.saturating_sub(na.get(pid).copied().unwrap_or(b));
+        if groups.is_empty() {
+            println!("no coding agents running");
         }
-        let (cores, bps) = (cpu / 1.5, net as f64 / 1.5);
-        let busy = !names.is_empty() && (bps >= BUSY_BYTES_PER_SEC || cores >= BUSY_CORES);
-        println!("agents: {names:?}  net: {bps:.0} B/s  cpu: {cores:.3} cores  busy: {busy}");
+        for (name, pids) in &groups {
+            let (mut cpu, mut net) = (0.0f64, 0u64);
+            for pid in pids {
+                let c = cb.get(pid).copied().unwrap_or(0.0);
+                cpu += (c - ca.get(pid).copied().unwrap_or(c)).max(0.0);
+                let b = nb.get(pid).copied().unwrap_or(0);
+                net += b.saturating_sub(na.get(pid).copied().unwrap_or(b));
+            }
+            let (cores, bps) = (cpu / 1.5, net as f64 / 1.5);
+            let busy = bps >= BUSY_BYTES_PER_SEC || cores >= BUSY_CORES;
+            println!(
+                "{name:<12} procs:{:<3} net:{bps:>9.0} B/s  cpu:{cores:>6.3} cores  working:{busy}",
+                pids.len()
+            );
+        }
         return;
     }
 
@@ -421,27 +437,29 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
 
 // --- Coding-agent detection --------------------------------------------------
 
-/// Scan running processes for coding agents. Returns the distinct agent names
-/// and a map of every agent-subtree pid -> accumulated CPU seconds, so the
-/// caller can derive *recent* activity from the delta between two samples.
+/// Scan running processes for coding agents. Returns a map of agent name ->
+/// every pid in that agent's process subtree(s), plus a map of pid -> CPU
+/// seconds, so the caller can derive *per-agent* recent activity from deltas.
 ///
 /// Matches against `comm` (the executable path, no arguments) so directory or
 /// argument paths that merely contain an agent's name don't false-positive.
-fn scan_agents() -> (Vec<String>, std::collections::HashMap<i32, f64>) {
+fn scan_agents() -> (
+    std::collections::HashMap<String, Vec<i32>>,
+    std::collections::HashMap<i32, f64>,
+) {
     use std::collections::{HashMap, HashSet};
     let out = match Command::new("ps")
         .args(["-axww", "-o", "pid=,ppid=,time=,comm="])
         .output()
     {
         Ok(o) => o.stdout,
-        Err(_) => return (Vec::new(), HashMap::new()),
+        Err(_) => return (HashMap::new(), HashMap::new()),
     };
     let text = String::from_utf8_lossy(&out);
 
     let mut cpu_of: HashMap<i32, f64> = HashMap::new();
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    let mut roots: Vec<i32> = Vec::new();
-    let mut names: Vec<String> = Vec::new();
+    let mut roots: Vec<(i32, String)> = Vec::new();
     let self_pid = std::process::id() as i32;
 
     for line in text.lines() {
@@ -457,31 +475,28 @@ fn scan_agents() -> (Vec<String>, std::collections::HashMap<i32, f64>) {
         cpu_of.insert(pid, cpu);
         children.entry(ppid).or_default().push(pid);
         if pid != self_pid && AGENTS.contains(&base) {
-            roots.push(pid);
-            let name = base.to_string();
-            if !names.contains(&name) {
-                names.push(name);
-            }
+            roots.push((pid, base.to_string()));
         }
     }
 
-    // Walk each agent's subtree, collecting CPU seconds per pid (deduped).
+    // Walk each agent's subtree (each pid counted once), grouping pids by name.
+    let mut groups: HashMap<String, Vec<i32>> = HashMap::new();
     let mut sub: HashMap<i32, f64> = HashMap::new();
     let mut seen = HashSet::new();
-    let mut stack = roots;
-    while let Some(p) = stack.pop() {
-        if !seen.insert(p) {
-            continue;
-        }
-        if let Some(c) = cpu_of.get(&p) {
-            sub.insert(p, *c);
-        }
-        if let Some(ch) = children.get(&p) {
-            stack.extend(ch);
+    for (root, name) in roots {
+        let mut stack = vec![root];
+        while let Some(p) = stack.pop() {
+            if !seen.insert(p) {
+                continue;
+            }
+            sub.insert(p, cpu_of.get(&p).copied().unwrap_or(0.0));
+            groups.entry(name.clone()).or_default().push(p);
+            if let Some(ch) = children.get(&p) {
+                stack.extend(ch);
+            }
         }
     }
-    names.sort();
-    (names, sub)
+    (groups, sub)
 }
 
 /// Per-process cumulative network bytes (in + out) via `nettop`, keyed by pid.
