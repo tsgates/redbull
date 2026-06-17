@@ -35,11 +35,37 @@ const STOPS: usize = 8; // Off, 15m, 1h, 2h, 3h, 6h, 12h, ∞
 const POPOVER_W: f64 = 264.0;
 const POPOVER_H: f64 = 116.0;
 
+// --- Agent auto-watch ---------------------------------------------------------
+// Coding-agent CLIs to watch for. Matched against each process's executable
+// basename, or the script name when launched via an interpreter.
+const AGENTS: &[&str] = &[
+    "claude", "codex", "copilot", "opencode", "aider", "cursor-agent", "gemini",
+    "goose", "amp", "qwen", "crush", "droid", "cody", "gptme", "auggie",
+];
+// An agent's process subtree counts as "working" when, between samples, it
+// either transfers network data above BUSY_BYTES_PER_SEC *or* burns more than
+// BUSY_CORES CPU cores. Network is the primary signal — agents spend most of
+// their busy time blocked on the LLM API (lots of I/O, ~no CPU) — while CPU
+// catches local work like builds/tests the agent runs. Both are measured as
+// deltas between samples, so they reflect *current* activity, not lifetime use.
+const BUSY_BYTES_PER_SEC: f64 = 2000.0;
+const BUSY_CORES: f64 = 0.03;
+/// Keep the Mac awake this long after the last observed activity, so brief lulls
+/// (e.g. waiting on a model response) don't drop the assertion.
+const GRACE_SECS: u64 = 180;
+
 #[derive(Default)]
 struct AppState {
     child: Option<Child>,
     expiry: Option<Instant>,
     index: usize,
+    // Auto-watch mode: keep awake while coding agents are working.
+    auto: bool,
+    last_active: Option<Instant>,
+    agents: Vec<String>, // distinct agent names currently running
+    prev_cpu: std::collections::HashMap<i32, f64>, // pid -> CPU seconds at last sample
+    prev_net: std::collections::HashMap<i32, u64>, // pid -> bytes in+out at last sample
+    prev_sample: Option<Instant>,
 }
 
 struct Ivars {
@@ -77,7 +103,7 @@ define_class!(
 
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&AnyObject>) {
-            {
+            let auto = {
                 let mut st = self.ivars().state.borrow_mut();
                 if let Some(c) = st.child.as_mut() {
                     if matches!(c.try_wait(), Ok(Some(_))) {
@@ -86,6 +112,10 @@ define_class!(
                         st.index = 0;
                     }
                 }
+                st.auto
+            };
+            if auto {
+                self.monitor();
             }
             self.refresh();
         }
@@ -101,6 +131,10 @@ define_class!(
                 let cmd = s.to_string();
                 if cmd == "quit" {
                     self.quit_now();
+                } else if cmd == "auto:1" {
+                    self.set_auto(true);
+                } else if cmd == "auto:0" {
+                    self.set_auto(false);
                 } else if let Some(n) = cmd.strip_prefix("set:") {
                     if let Ok(i) = n.parse::<usize>() {
                         self.apply(i.min(STOPS - 1));
@@ -113,10 +147,13 @@ define_class!(
 
 impl Controller {
     /// Apply a slider index: 0 = off, 7 = indefinite, else a timed run.
+    /// Using the slider takes over from auto-watch mode.
     fn apply(&self, i: usize) {
         {
             let mut st = self.ivars().state.borrow_mut();
             let st = &mut *st;
+            st.auto = false;
+            st.last_active = None;
             st.index = i;
             match i {
                 0 => stop(&mut st.child, &mut st.expiry),
@@ -125,6 +162,80 @@ impl Controller {
             }
         }
         self.refresh();
+    }
+
+    /// Toggle auto-watch mode. When on, the slider is ignored and the awake
+    /// state is driven by `monitor()` (agents working -> awake).
+    fn set_auto(&self, on: bool) {
+        {
+            let mut st = self.ivars().state.borrow_mut();
+            let st = &mut *st;
+            stop(&mut st.child, &mut st.expiry); // hand control to the monitor
+            st.index = 0;
+            st.auto = on;
+            st.last_active = None;
+            st.prev_cpu.clear();
+            st.prev_net.clear();
+            st.prev_sample = None;
+            if !on {
+                st.agents.clear();
+            }
+        }
+        if on {
+            self.monitor(); // scan immediately so the popover shows status now
+        }
+        self.refresh();
+    }
+
+    /// Auto-watch step (each tick): measure how much network I/O and CPU each
+    /// agent's process subtree used since the last sample. While any are working
+    /// (or were within the grace window) keep the Mac awake; else let it sleep.
+    fn monitor(&self) {
+        use std::collections::HashMap;
+        let (agents, cpu_now) = scan_agents();
+        let net_now = net_bytes();
+        let now = Instant::now();
+        let mut st = self.ivars().state.borrow_mut();
+        let st = &mut *st;
+
+        let elapsed = st
+            .prev_sample
+            .map(|t| now.duration_since(t).as_secs_f64())
+            .unwrap_or(1.0)
+            .max(0.2);
+
+        // CPU-seconds and network bytes consumed across the agent subtrees.
+        let mut cpu_delta = 0.0f64;
+        let mut net_delta = 0u64;
+        let mut net_keep: HashMap<i32, u64> = HashMap::new();
+        for (pid, c) in &cpu_now {
+            let pc = st.prev_cpu.get(pid).copied().unwrap_or(*c); // new pid -> no delta
+            cpu_delta += (c - pc).max(0.0);
+            let b = net_now.get(pid).copied().unwrap_or(0);
+            let pb = st.prev_net.get(pid).copied().unwrap_or(b);
+            net_delta += b.saturating_sub(pb);
+            net_keep.insert(*pid, b);
+        }
+        let busy = !agents.is_empty()
+            && (net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC
+                || cpu_delta / elapsed >= BUSY_CORES);
+
+        st.prev_cpu = cpu_now;
+        st.prev_net = net_keep;
+        st.prev_sample = Some(now);
+        st.agents = agents;
+        if busy {
+            st.last_active = Some(now);
+        }
+        let keep = st
+            .last_active
+            .map(|t| now.duration_since(t).as_secs() < GRACE_SECS)
+            .unwrap_or(false);
+        if keep && st.child.is_none() {
+            start(&mut st.child, &mut st.expiry, None); // indefinite while working
+        } else if !keep && st.child.is_some() {
+            stop(&mut st.child, &mut st.expiry);
+        }
     }
 
     fn quit_now(&self) {
@@ -151,20 +262,30 @@ impl Controller {
                 img.setSize(NSSize::new(w as f64 / h as f64 * 18.0, 18.0));
                 button.setImage(Some(&img));
             }
-            let title = match (active, st.expiry) {
-                (true, Some(until)) => format!(" {}", remaining_label(until)),
-                (true, None) => " ∞".to_string(),
-                _ => String::new(),
+            let title = if st.auto {
+                String::new() // bolt brightness conveys awake state in auto mode
+            } else {
+                match (active, st.expiry) {
+                    (true, Some(until)) => format!(" {}", remaining_label(until)),
+                    (true, None) => " ∞".to_string(),
+                    _ => String::new(),
+                }
             };
             button.setTitle(&ns(&title));
         }
 
-        let state_str = match (active, st.expiry) {
-            (false, _) => "Off".to_string(),
-            (true, Some(until)) => format!("Awake · {}", remaining_label(until)),
-            (true, None) => "Awake · ∞".to_string(),
+        let time_str = match (active, st.expiry) {
+            (false, _) => String::new(),
+            (true, Some(until)) => remaining_label(until),
+            (true, None) => "∞".to_string(),
         };
-        let js = format!("window.redbullSet&&redbullSet({},{:?})", st.index, state_str);
+        let n = st.agents.len();
+        // Fallback text for non-active auto states (active shows count + icon).
+        let auto_text = if n == 0 { "watching" } else { "idle" };
+        let js = format!(
+            "window.redbullSet&&redbullSet({},{:?});window.redbullAuto&&redbullAuto({},{},{},{:?})",
+            st.index, time_str, st.auto as u8, active as u8, n, auto_text
+        );
         unsafe {
             iv.webview
                 .evaluateJavaScript_completionHandler(&ns(&js), None);
@@ -177,6 +298,26 @@ fn ns(s: &str) -> Retained<NSString> {
 }
 
 fn main() {
+    // Debug: `redbull scan` samples agents twice (~1.5s apart) and reports the
+    // recent network + CPU usage and whether that counts as "working".
+    if std::env::args().any(|a| a == "scan") {
+        let (names, ca) = scan_agents();
+        let na = net_bytes();
+        std::thread::sleep(Duration::from_millis(1500));
+        let (_, cb) = scan_agents();
+        let nb = net_bytes();
+        let (mut cpu, mut net) = (0.0f64, 0u64);
+        for (pid, c) in &cb {
+            cpu += (c - ca.get(pid).copied().unwrap_or(*c)).max(0.0);
+            let b = nb.get(pid).copied().unwrap_or(0);
+            net += b.saturating_sub(na.get(pid).copied().unwrap_or(b));
+        }
+        let (cores, bps) = (cpu / 1.5, net as f64 / 1.5);
+        let busy = !names.is_empty() && (bps >= BUSY_BYTES_PER_SEC || cores >= BUSY_CORES);
+        println!("agents: {names:?}  net: {bps:.0} B/s  cpu: {cores:.3} cores  busy: {busy}");
+        return;
+    }
+
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
@@ -276,6 +417,114 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
         let _ = c.wait();
     }
     *expiry = None;
+}
+
+// --- Coding-agent detection --------------------------------------------------
+
+/// Scan running processes for coding agents. Returns the distinct agent names
+/// and a map of every agent-subtree pid -> accumulated CPU seconds, so the
+/// caller can derive *recent* activity from the delta between two samples.
+///
+/// Matches against `comm` (the executable path, no arguments) so directory or
+/// argument paths that merely contain an agent's name don't false-positive.
+fn scan_agents() -> (Vec<String>, std::collections::HashMap<i32, f64>) {
+    use std::collections::{HashMap, HashSet};
+    let out = match Command::new("ps")
+        .args(["-axww", "-o", "pid=,ppid=,time=,comm="])
+        .output()
+    {
+        Ok(o) => o.stdout,
+        Err(_) => return (Vec::new(), HashMap::new()),
+    };
+    let text = String::from_utf8_lossy(&out);
+
+    let mut cpu_of: HashMap<i32, f64> = HashMap::new();
+    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
+    let mut roots: Vec<i32> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
+    let self_pid = std::process::id() as i32;
+
+    for line in text.lines() {
+        let mut it = line.split_whitespace();
+        let pid: i32 = match it.next().and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => continue,
+        };
+        let ppid: i32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let cpu = parse_cputime(it.next().unwrap_or("0"));
+        let comm = it.collect::<Vec<_>>().join(" "); // executable path (may contain spaces)
+        let base = comm.rsplit('/').next().unwrap_or(&comm);
+        cpu_of.insert(pid, cpu);
+        children.entry(ppid).or_default().push(pid);
+        if pid != self_pid && AGENTS.contains(&base) {
+            roots.push(pid);
+            let name = base.to_string();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+
+    // Walk each agent's subtree, collecting CPU seconds per pid (deduped).
+    let mut sub: HashMap<i32, f64> = HashMap::new();
+    let mut seen = HashSet::new();
+    let mut stack = roots;
+    while let Some(p) = stack.pop() {
+        if !seen.insert(p) {
+            continue;
+        }
+        if let Some(c) = cpu_of.get(&p) {
+            sub.insert(p, *c);
+        }
+        if let Some(ch) = children.get(&p) {
+            stack.extend(ch);
+        }
+    }
+    names.sort();
+    (names, sub)
+}
+
+/// Per-process cumulative network bytes (in + out) via `nettop`, keyed by pid.
+/// Diffing two snapshots yields the bytes transferred in between — the signal
+/// that an agent is actively talking to the LLM API.
+fn net_bytes() -> std::collections::HashMap<i32, u64> {
+    use std::collections::HashMap;
+    let mut map = HashMap::new();
+    let out = match Command::new("nettop")
+        .args(["-P", "-L", "1", "-J", "bytes_in,bytes_out", "-n", "-x"])
+        .output()
+    {
+        Ok(o) => o.stdout,
+        Err(_) => return map,
+    };
+    for line in String::from_utf8_lossy(&out).lines() {
+        let f: Vec<&str> = line.split(',').collect();
+        if f.len() < 3 {
+            continue;
+        }
+        // f[0] is "name.pid" (the name may contain dots/spaces; pid is last).
+        let pid = match f[0].rsplit('.').next().and_then(|s| s.trim().parse::<i32>().ok()) {
+            Some(p) => p,
+            None => continue,
+        };
+        let bytes = f[1].trim().parse::<u64>().unwrap_or(0) + f[2].trim().parse::<u64>().unwrap_or(0);
+        *map.entry(pid).or_insert(0) += bytes;
+    }
+    map
+}
+
+/// Parse a `ps -o time` value ("[D-][H:]M:SS.ss") into seconds.
+fn parse_cputime(s: &str) -> f64 {
+    let s = s.trim();
+    let (days, rest) = match s.split_once('-') {
+        Some((d, r)) => (d.parse::<f64>().unwrap_or(0.0), r),
+        None => (0.0, s),
+    };
+    let mut secs = 0.0f64;
+    for p in rest.split(':') {
+        secs = secs * 60.0 + p.parse::<f64>().unwrap_or(0.0);
+    }
+    secs + days * 86400.0
 }
 
 /// Remaining-time label whose resolution sharpens as the timer winds down:
@@ -413,8 +662,13 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .head{display:flex;align-items:center;gap:9px;margin-bottom:4px}
 .logo{width:22px;height:22px;background:#E24B4A;border-radius:6px;display:flex;align-items:center;justify-content:center}
 .name{font-size:14px;font-weight:600}
-.pill{margin-left:auto;font-size:12px;padding:3px 9px;border-radius:999px;font-weight:600;background:#E24B4A;color:#26262b}
+.pill{margin-left:6px;flex:none;font-size:12px;padding:3px 9px;border-radius:999px;font-weight:600;white-space:nowrap;background:#E24B4A;color:#26262b}
+.name{flex:none}
 .pill.off{background:rgba(255,255,255,.14);color:#cdcdd1}
+.auto{margin-left:auto;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;padding:0;border:1px solid rgba(255,255,255,.16);background:transparent;color:#a9a9ad;border-radius:7px;cursor:pointer}
+.auto:hover{color:#fff;border-color:rgba(255,255,255,.32)}
+.auto.on{background:#E24B4A;border-color:transparent;color:#fff}
+.auto svg{display:block}
 .x{margin-left:6px;width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#8e8e93;font-size:16px;line-height:1;cursor:pointer;border-radius:5px;font-family:inherit}
 .x:hover{background:rgba(255,255,255,.12);color:#fff}
 .slider{position:relative;height:28px;margin:18px 8px 0}
@@ -428,6 +682,8 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <div class="head">
 <span class="logo"><svg width="13" height="13" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#fff"/></svg></span>
 <span class="name">Redbull</span>
+<button class="auto" id="auto" title="Keep awake while coding agents (claude, codex, copilot, opencode, …) are working">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg></button>
 <span class="pill off" id="pill">Off</span>
 <button class="x" onclick="post('quit')" title="Quit" aria-label="Quit">&times;</button>
 </div>
@@ -439,11 +695,23 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <div class="labels" id="labels"></div>
 </div><script>
 var LAB=["Off","15m","1h","2h","3h","6h","12h","∞"];
+var BOLT_ICON='<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
+var AGENT_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><path d="M12 2.4l1.7 5.1 5.1 1.7-5.1 1.7L12 16l-1.7-5.1L5.2 9.2l5.1-1.7z"/><path d="M18.6 14l.75 2.25L21.6 17l-2.25.75L18.6 20l-.75-2.25L15.6 17l2.25-.75z"/></svg>';
 var rng=document.getElementById('rng'),fill=document.getElementById('fill'),thumb=document.getElementById('thumb'),pill=document.getElementById('pill'),labels=document.getElementById('labels'),ticks=document.getElementById('ticks');
 LAB.forEach(function(s,i){var p=i/7*100;var t=document.createElement('div');t.className='tick';t.style.left=p+'%';ticks.appendChild(t);var l=document.createElement('span');l.textContent=s;labels.appendChild(l);});
 function post(m){try{window.webkit.messageHandlers.rb.postMessage(m);}catch(e){}}
-function paint(v,text){var p=v/7*100;fill.style.width=p+'%';thumb.style.left=p+'%';var off=(v==0);fill.style.opacity=off?0:1;pill.textContent=(text!=null)?text:(off?'Off':'Awake · '+LAB[v]);pill.className=off?'pill off':'pill';for(var i=0;i<labels.children.length;i++){labels.children[i].style.color=(i==v)?'#fff':'#8e8e93';}}
+function paint(v,time){var p=v/7*100;fill.style.width=p+'%';thumb.style.left=p+'%';var off=(v==0);fill.style.opacity=off?0:1;if(off){pill.textContent='Off';pill.className='pill off';}else{var t=(time!=null&&time!=='')?time:LAB[v];pill.innerHTML=BOLT_ICON+' '+t;pill.className='pill';}for(var i=0;i<labels.children.length;i++){labels.children[i].style.color=(i==v)?'#fff':'#8e8e93';}}
 rng.addEventListener('input',function(){var v=+rng.value;paint(v);post('set:'+v);});
 window.redbullSet=function(v,text){rng.value=v;paint(v,text);};
+var autoBtn=document.getElementById('auto'),slider=document.querySelector('.slider');
+autoBtn.addEventListener('click',function(){post('auto:'+(autoBtn.classList.contains('on')?0:1));});
+window.redbullAuto=function(on,awake,count,text){
+  on=!!on;autoBtn.classList.toggle('on',on);
+  slider.style.opacity=on?0.35:1;slider.style.pointerEvents=on?'none':'auto';rng.disabled=on;
+  if(on){
+    if(awake&&count>0){pill.innerHTML=count+' '+AGENT_ICON;pill.className='pill';}
+    else{pill.textContent=text;pill.className='pill off';}
+  }
+};
 paint(0);
 </script></body></html>"##;
