@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Redbull — keep your Mac awake</title>
-<meta name="description" content="A tiny macOS menu-bar app that keeps your Mac awake. One slider, from 15 minutes to forever. Native, ~100 KB, free and open source.">
+<meta name="description" content="A tiny macOS menu-bar app that keeps your Mac awake. One slider, from 15 minutes to forever — or auto-watch your coding agents (claude, codex, copilot…). Native, ~100 KB, free and open source.">
 <meta property="og:title" content="Redbull — keep your Mac awake">
-<meta property="og:description" content="A tiny macOS menu-bar app. One slider, from 15 minutes to forever.">
+<meta property="og:description" content="A tiny macOS menu-bar app. One slider — or auto-watch your coding agents.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://tsgates.github.io/redbull/">
 <meta property="og:image" content="https://tsgates.github.io/redbull/og.png">
@@ -16,7 +16,7 @@
 <meta name="twitter:image" content="https://tsgates.github.io/redbull/og.png">
 <link rel="canonical" href="https://tsgates.github.io/redbull/">
 <script type="application/ld+json">
-{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Redbull","operatingSystem":"macOS 10.13+","applicationCategory":"UtilitiesApplication","description":"A tiny macOS menu-bar app that keeps your Mac awake. One slider, from 15 minutes to forever.","url":"https://tsgates.github.io/redbull/","downloadUrl":"https://github.com/tsgates/redbull/releases/latest","softwareVersion":"0.1.0","author":{"@type":"Person","name":"tsgates"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"Redbull","operatingSystem":"macOS 10.13+","applicationCategory":"UtilitiesApplication","description":"A tiny macOS menu-bar app that keeps your Mac awake. One slider, from 15 minutes to forever, or auto-watch your coding agents.","url":"https://tsgates.github.io/redbull/","downloadUrl":"https://github.com/tsgates/redbull/releases/latest","softwareVersion":"0.2.0","author":{"@type":"Person","name":"tsgates"},"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
 </script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='24' fill='%23E24B4A'/%3E%3Cpolygon points='54 12 18 58 49 58 46 90 82 42 51 42 54 12' fill='white'/%3E%3C/svg%3E">
 <style>
@@ -67,7 +67,8 @@
   .pv-head{display:flex;align-items:center;gap:9px;margin-bottom:16px}
   .pv-logo{width:22px;height:22px;border-radius:6px}
   .pv-name{font-size:14px;font-weight:600;color:#f2f2f4}
-  .pv-pill{margin-left:auto;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;background:var(--red);color:#26262b}
+  .pv-auto{margin-left:auto;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:none;border-radius:7px;background:var(--red);color:#fff}
+  .pv-pill{margin-left:8px;display:flex;align-items:center;gap:4px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:999px;white-space:nowrap;background:var(--red);color:#26262b}
   .pv-x{width:20px;height:20px;display:flex;align-items:center;justify-content:center;color:#8e8e93;font-size:16px;border-radius:5px}
   .pv-slider{position:relative;height:24px;margin:0 6px}
   .pv-track{position:absolute;top:10px;left:0;right:0;height:4px;background:rgba(255,255,255,.15);border-radius:2px}
@@ -166,7 +167,8 @@
       <div class="pv-head">
         <svg class="pv-logo" viewBox="0 0 100 100"><rect width="100" height="100" rx="24" fill="url(#sq)"/><polygon points="54 12 18 58 49 58 46 90 82 42 51 42 54 12" fill="#fff"/></svg>
         <span class="pv-name">Redbull</span>
-        <span class="pv-pill">Awake · 2h</span>
+        <button class="pv-auto" title="Auto: keep awake while coding agents work"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg></button>
+        <span class="pv-pill"><svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> 2h</span>
         <span class="pv-x">&times;</span>
       </div>
       <div class="pv-slider">
@@ -186,6 +188,7 @@
   <div class="grid">
     <div class="feat"><div class="ic">🎚️</div><h3>One slider</h3><p>Drag from <b>Off</b> to <b>∞</b>. The whole control is a single tick slider — no menus to dig through.</p></div>
     <div class="feat"><div class="ic">⏱️</div><h3>Sensible presets</h3><p>15 minutes, 1 / 2 / 3 / 6 / 12 hours, or indefinitely. Snaps right to the stop you want.</p></div>
+    <div class="feat"><div class="ic">🤖</div><h3>Watches your AI agents</h3><p>Auto mode keeps the Mac awake while <code>claude</code>, <code>codex</code>, <code>copilot</code>, <code>opencode</code>… are working — and lets it sleep once they go idle.</p></div>
     <div class="feat"><div class="ic">⚡</div><h3>Live countdown</h3><p>The menu-bar bolt shows the time remaining at a glance, with a fixed width so it never jitters.</p></div>
     <div class="feat"><div class="ic">🪶</div><h3>Featherweight</h3><p>A ~100&nbsp;KB native binary in Rust + AppKit. ~0% CPU when idle. No Electron, no daemon.</p></div>
     <div class="feat"><div class="ic">🔌</div><h3>Zero config</h3><p>No account, no login item, no preferences. Launch it and it lives quietly in your menu bar.</p></div>

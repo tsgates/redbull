@@ -698,7 +698,7 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 </div><script>
 var LAB=["Off","15m","1h","2h","3h","6h","12h","∞"];
 var BOLT_ICON='<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-1px"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>';
-var AGENT_ICON='<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><path d="M12 2.4l1.7 5.1 5.1 1.7-5.1 1.7L12 16l-1.7-5.1L5.2 9.2l5.1-1.7z"/><path d="M18.6 14l.75 2.25L21.6 17l-2.25.75L18.6 20l-.75-2.25L15.6 17l2.25-.75z"/></svg>';
+var AGENT_ICON='<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-3px"><rect x="4" y="8" width="16" height="11" rx="3.5"/><path d="M12 8V4.6"/><circle cx="12" cy="3.3" r="1.3" fill="currentColor" stroke="none"/><circle cx="9" cy="13.4" r="1.35" fill="currentColor" stroke="none"/><circle cx="15" cy="13.4" r="1.35" fill="currentColor" stroke="none"/><path d="M2.5 13v3M21.5 13v3"/></svg>';
 var rng=document.getElementById('rng'),fill=document.getElementById('fill'),thumb=document.getElementById('thumb'),pill=document.getElementById('pill'),labels=document.getElementById('labels'),ticks=document.getElementById('ticks');
 LAB.forEach(function(s,i){var p=i/7*100;var t=document.createElement('div');t.className='tick';t.style.left=p+'%';ticks.appendChild(t);var l=document.createElement('span');l.textContent=s;labels.appendChild(l);});
 function post(m){try{window.webkit.messageHandlers.rb.postMessage(m);}catch(e){}}
