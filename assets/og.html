@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1200px;height:630px;overflow:hidden}
+  body{
+    background:radial-gradient(900px 500px at 88% 18%, rgba(226,75,74,.28), transparent 60%), #0b0b0d;
+    color:#ededf0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+    display:flex;align-items:center;gap:56px;padding:0 80px;
+  }
+  .left{flex:1}
+  .pill{display:inline-block;font-size:21px;font-weight:600;color:#ff7a5c;
+    background:rgba(226,75,74,.14);border:1px solid rgba(226,75,74,.3);
+    padding:8px 18px;border-radius:999px;margin-bottom:30px}
+  h1{font-size:92px;line-height:1.0;letter-spacing:-.03em;font-weight:800;margin-bottom:26px}
+  h1 .g{background:linear-gradient(120deg,#ff7a5c,#E24B4A);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tag{font-size:34px;color:#a9a9b2;margin-bottom:42px;font-weight:400}
+  .meta{display:flex;gap:14px;align-items:center;font-size:23px;color:#7d7d86}
+  .dot{width:5px;height:5px;border-radius:50%;background:#55555e}
+  .b{color:#cfcfd6;font-weight:600}
+  .right{flex:none;display:flex;flex-direction:column;align-items:center;gap:22px}
+  .icon{width:300px;height:300px;border-radius:70px;filter:drop-shadow(0 24px 60px rgba(226,75,74,.4))}
+  .url{font-size:24px;color:#8a8a93;font-weight:600;letter-spacing:.01em}
+</style></head>
+<body>
+  <div class="left">
+    <span class="pill">⚡ macOS menu-bar utility</span>
+    <h1>Keep your Mac<br><span class="g">awake.</span></h1>
+    <div class="tag">One slider — 15 minutes to forever.</div>
+    <div class="meta"><span class="b">~100 KB</span><span class="dot"></span><span class="b">native</span><span class="dot"></span><span class="b">open source</span></div>
+  </div>
+  <div class="right">
+    <svg class="icon" viewBox="0 0 100 100">
+      <defs><linearGradient id="sq" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#ff5a3c"/><stop offset="1" stop-color="#b21226"/></linearGradient></defs>
+      <rect width="100" height="100" rx="24" fill="url(#sq)"/>
+      <polygon points="54 12 18 58 49 58 46 90 82 42 51 42 54 12" fill="#fff"/>
+    </svg>
+    <div class="url">tsgates.github.io/redbull</div>
+  </div>
+</body></html>

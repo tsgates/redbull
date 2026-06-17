@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/icon.png" width="120" alt="Redbull icon">
+<img src="docs/og.png" alt="Redbull — keep your Mac awake" width="640">
 
 # Redbull
 
@@ -59,29 +59,6 @@ cargo run                # quick run (debug)
 - **Featherweight** — a ~100 KB native binary; ~0% CPU when idle.
 - **Zero config** — no account, no preferences, no login item.
 - **Open source** — built on `caffeinate`; read every line.
-
-## How it works
-
-Picking a duration runs the system power-assertion tool:
-
-```sh
-caffeinate -d -i -t 7200   # hold display + idle sleep for 2 hours
-```
-
-Display and idle sleep are held for the chosen time, then released automatically.
-The UI is built directly on AppKit via [`objc2`](https://github.com/madsmtm/objc2):
-the app owns an `NSStatusItem` and anchors an `NSPopover` (a `WKWebView` rendering
-the slider) to it.
-
-## Releasing
-
-Tag a version and the [GitHub Action](.github/workflows/release.yml) builds both
-arch packages and publishes a release:
-
-```sh
-# bump `version` in Cargo.toml, then:
-git tag v0.2.0 && git push origin v0.2.0
-```
 
 ## License
 
