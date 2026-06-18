@@ -50,9 +50,10 @@ const AGENTS: &[&str] = &[
 // deltas between samples, so they reflect *current* activity, not lifetime use.
 const BUSY_BYTES_PER_SEC: f64 = 2000.0;
 const BUSY_CORES: f64 = 0.03;
-/// Keep the Mac awake this long after the last observed activity, so brief lulls
-/// (e.g. waiting on a model response) don't drop the assertion.
-const GRACE_SECS: u64 = 180;
+/// Keep the Mac awake this long after an agent's last observed activity; once no
+/// agent has been active for this window, Redbull releases the wake assertion
+/// (it keeps watching, so it re-wakes when an agent gets busy again).
+const GRACE_SECS: u64 = 300; // 5 minutes
 
 #[derive(Default)]
 struct AppState {

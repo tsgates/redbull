@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "redbull"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "objc2",
  "objc2-app-kit",
