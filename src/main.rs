@@ -54,6 +54,21 @@ fn is_interpreter(base: &str) -> bool {
         || base.starts_with("python")
 }
 
+/// GUI coding agents embedded in editors — matched by the executable basename
+/// of their extension-host / app process, mapped to a friendly name. These have
+/// no tty and noisy CPU (editing, indexing), so they're judged by *external
+/// network* only (the editor talking to an LLM API).
+const GUI_APPS: &[(&str, &str)] = &[
+    ("Code Helper (Plugin)", "vscode"),    // VS Code extension host (Copilot, Cline, …)
+    ("Cursor Helper (Plugin)", "cursor"),  // Cursor
+    ("Windsurf Helper (Plugin)", "windsurf"),
+    ("zed", "zed"),                        // Zed (native)
+];
+
+fn is_gui_agent(name: &str) -> bool {
+    GUI_APPS.iter().any(|(_, n)| *n == name)
+}
+
 /// For an interpreter command line, return the agent name iff the *script* (the
 /// first non-flag argument) is a known agent. Only the script is checked — flag
 /// values are ignored — so paths like `--probe …/copilot` don't false-positive.
@@ -223,7 +238,7 @@ impl Controller {
     /// if either exceeds threshold, or it was working within the grace window.
     /// Keep the Mac awake only while at least one agent is working.
     fn monitor(&self) {
-        let (groups, cpu_now) = scan_agents(); // name -> subtree pids, pid -> cpu secs
+        let (groups, cpu_now, tty_of) = scan_agents();
         let net_now = net_bytes();
         let now = Instant::now();
         let mut st = self.ivars().state.borrow_mut();
@@ -235,30 +250,44 @@ impl Controller {
             .unwrap_or(1.0)
             .max(0.2);
 
-        // Per-agent activity from this sample.
+        let mut working: Vec<String> = Vec::new();
         for (name, pids) in &groups {
+            // Primary signal: did any of the agent's terminals get output
+            // recently? (mtime). Captures streaming, spinners, tool logs —
+            // exactly "the agent is doing work", attended or not.
+            let tty_working = pids
+                .iter()
+                .filter_map(|p| tty_of.get(p))
+                .filter_map(|t| tty_output_age(t))
+                .any(|age| age < GRACE_SECS);
+
+            // Fallback for headless agents (no tty): external network + CPU.
             let (mut cpu_delta, mut net_delta) = (0.0f64, 0u64);
             for pid in pids {
                 let c = cpu_now.get(pid).copied().unwrap_or(0.0);
-                let pc = st.prev_cpu.get(pid).copied().unwrap_or(c); // new pid -> no delta
+                let pc = st.prev_cpu.get(pid).copied().unwrap_or(c);
                 cpu_delta += (c - pc).max(0.0);
                 let b = net_now.get(pid).copied().unwrap_or(0);
                 let pb = st.prev_net.get(pid).copied().unwrap_or(b);
                 net_delta += b.saturating_sub(pb);
             }
-            let busy = net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC
-                || cpu_delta / elapsed >= BUSY_CORES;
-            if busy {
+            // GUI editors: network only (their CPU is noisy). Others: net or CPU.
+            let cpu_busy = !is_gui_agent(name) && cpu_delta / elapsed >= BUSY_CORES;
+            if net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC || cpu_busy {
                 st.active_since.insert(name.clone(), now);
+            }
+            let io_working = st
+                .active_since
+                .get(name)
+                .is_some_and(|t| now.duration_since(*t).as_secs() < GRACE_SECS);
+
+            if tty_working || io_working {
+                working.push(name.clone());
             }
         }
 
-        // An agent stays "working" only while present and within the grace window.
-        st.active_since
-            .retain(|n, t| groups.contains_key(n) && now.duration_since(*t).as_secs() < GRACE_SECS);
-        let mut working: Vec<String> = st.active_since.keys().cloned().collect();
+        st.active_since.retain(|n, _| groups.contains_key(n));
         working.sort();
-
         st.prev_cpu = cpu_now;
         st.prev_net = net_now;
         st.prev_sample = Some(now);
@@ -336,10 +365,10 @@ fn main() {
     // Debug: `redbull scan` samples agents twice (~1.5s apart) and reports each
     // agent's recent network + CPU and whether it counts as "working".
     if std::env::args().any(|a| a == "scan") {
-        let (groups, ca) = scan_agents();
+        let (groups, ca, tty_of) = scan_agents();
         let na = net_bytes();
         std::thread::sleep(Duration::from_millis(1500));
-        let (_, cb) = scan_agents();
+        let (_, cb, _) = scan_agents();
         let nb = net_bytes();
         if groups.is_empty() {
             println!("no coding agents running");
@@ -353,9 +382,17 @@ fn main() {
                 net += b.saturating_sub(na.get(pid).copied().unwrap_or(b));
             }
             let (cores, bps) = (cpu / 1.5, net as f64 / 1.5);
-            let busy = bps >= BUSY_BYTES_PER_SEC || cores >= BUSY_CORES;
+            let tty_age = pids
+                .iter()
+                .filter_map(|p| tty_of.get(p))
+                .filter_map(|t| tty_output_age(t))
+                .min();
+            let tty_str = tty_age.map_or("none".to_string(), |a| format!("{a}s"));
+            let working = bps >= BUSY_BYTES_PER_SEC
+                || cores >= BUSY_CORES
+                || tty_age.is_some_and(|a| a < GRACE_SECS);
             println!(
-                "{name:<12} procs:{:<3} net:{bps:>9.0} B/s  cpu:{cores:>6.3} cores  working:{busy}",
+                "{name:<10} procs:{:<3} tty_output:{tty_str:>6} ago  net:{bps:>8.0} B/s  cpu:{cores:>6.3}  working:{working}",
                 pids.len()
             );
         }
@@ -474,6 +511,7 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
 fn scan_agents() -> (
     std::collections::HashMap<String, Vec<i32>>,
     std::collections::HashMap<i32, f64>,
+    std::collections::HashMap<i32, String>,
 ) {
     use std::collections::{HashMap, HashSet};
     let ps = |fmt: &str| -> String {
@@ -484,20 +522,25 @@ fn scan_agents() -> (
             .unwrap_or_default()
     };
 
-    // Pass 1: pid, ppid, CPU time, and executable basename (handles spaces).
+    // Pass 1: pid, ppid, controlling tty, CPU time, executable basename.
     let mut cpu_of: HashMap<i32, f64> = HashMap::new();
+    let mut tty_of: HashMap<i32, String> = HashMap::new();
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
     let mut comm_base: HashMap<i32, String> = HashMap::new();
-    for line in ps("pid=,ppid=,time=,comm=").lines() {
+    for line in ps("pid=,ppid=,tty=,time=,comm=").lines() {
         let mut it = line.split_whitespace();
         let pid: i32 = match it.next().and_then(|s| s.parse().ok()) {
             Some(v) => v,
             None => continue,
         };
         let ppid: i32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+        let tty = it.next().unwrap_or("??");
         let cpu = parse_cputime(it.next().unwrap_or("0"));
         let comm = it.collect::<Vec<_>>().join(" ");
         cpu_of.insert(pid, cpu);
+        if tty != "??" && tty != "?" {
+            tty_of.insert(pid, tty.to_string());
+        }
         children.entry(ppid).or_default().push(pid);
         comm_base.insert(pid, comm.rsplit('/').next().unwrap_or(&comm).to_string());
     }
@@ -523,6 +566,8 @@ fn scan_agents() -> (
         }
         let name = if AGENTS.contains(&base.as_str()) {
             Some(base.clone())
+        } else if let Some((_, friendly)) = GUI_APPS.iter().find(|(b, _)| *b == base) {
+            Some(friendly.to_string())
         } else if is_interpreter(base) {
             cmd_of.get(&pid).and_then(|c| script_agent(c))
         } else {
@@ -550,7 +595,21 @@ fn scan_agents() -> (
             }
         }
     }
-    (groups, sub)
+    // Keep only the ttys belonging to agent subtrees.
+    tty_of.retain(|pid, _| sub.contains_key(pid));
+    (groups, sub, tty_of)
+}
+
+/// Seconds since the given tty device last had output written to it (mtime).
+/// `None` if it can't be read. Fresh mtime == the agent recently produced output.
+fn tty_output_age(tty: &str) -> Option<u64> {
+    std::fs::metadata(format!("/dev/{tty}"))
+        .ok()?
+        .modified()
+        .ok()?
+        .elapsed()
+        .ok()
+        .map(|d| d.as_secs())
 }
 
 /// Per-process cumulative *external* network bytes (in + out) via `nettop`,
