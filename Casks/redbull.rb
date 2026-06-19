@@ -1,9 +1,9 @@
 cask "redbull" do
   arch arm: "arm64", intel: "x86_64"
 
-  version "0.2.3"
-  sha256 arm:   "2947e088ba2435085243dccd7bf09b5772eb3698554c4f89c464327f0baa62ee",
-         intel: "0c7ad78fea193a984d06518f60ef52ee45237cc7c9f8cc0a60852d075dc64c14"
+  version "0.2.4"
+  sha256 arm:   "a18c962ddb5053111c76fc5d3f584f6a61bfafd372dd857f188f43221588a70a",
+         intel: "7e5661363aad8699265941510256bf04640f67daa92a73620624e5510e18579d"
 
   url "https://github.com/tsgates/redbull/releases/download/v#{version}/Redbull-#{version}-#{arch}.dmg"
   name "Redbull"
