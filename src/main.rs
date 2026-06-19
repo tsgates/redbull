@@ -39,9 +39,36 @@ const POPOVER_H: f64 = 116.0;
 // Coding-agent CLIs to watch for. Matched against each process's executable
 // basename, or the script name when launched via an interpreter.
 const AGENTS: &[&str] = &[
-    "claude", "codex", "copilot", "opencode", "aider", "cursor-agent", "gemini",
-    "goose", "amp", "qwen", "crush", "droid", "cody", "gptme", "auggie",
+    // native-binary CLIs (matched by executable basename)
+    "claude", "codex", "copilot", "opencode", "cursor-agent", "gemini", "goose",
+    "amp", "qwen", "crush", "droid", "cody", "auggie", "qchat", "openhands",
+    "plandex", "aichat", "codebuff",
+    // interpreter-launched CLIs (matched by their script name; see scan_agents)
+    "aider", "gptme", "mentat", "ra-aid", "interpreter",
 ];
+
+/// Interpreters that may launch an agent as a script (we then match the script
+/// name, not the interpreter). Covers e.g. `python …/aider`, `node …/gemini`.
+fn is_interpreter(base: &str) -> bool {
+    matches!(base, "node" | "bun" | "deno" | "ruby" | "npx" | "tsx" | "ts-node")
+        || base.starts_with("python")
+}
+
+/// For an interpreter command line, return the agent name iff the *script* (the
+/// first non-flag argument) is a known agent. Only the script is checked — flag
+/// values are ignored — so paths like `--probe …/copilot` don't false-positive.
+fn script_agent(cmd: &str) -> Option<String> {
+    let mut toks = cmd.split_whitespace();
+    toks.next(); // argv0 = the interpreter itself
+    for t in toks {
+        if t.starts_with('-') {
+            continue; // skip flags like -u, -m
+        }
+        let base = t.rsplit('/').next().unwrap_or(t);
+        return AGENTS.contains(&base).then(|| base.to_string());
+    }
+    None
+}
 // An agent's process subtree counts as "working" when, between samples, it
 // either transfers network data above BUSY_BYTES_PER_SEC *or* burns more than
 // BUSY_CORES CPU cores. Network is the primary signal — agents spend most of
@@ -449,21 +476,19 @@ fn scan_agents() -> (
     std::collections::HashMap<i32, f64>,
 ) {
     use std::collections::{HashMap, HashSet};
-    let out = match Command::new("ps")
-        .args(["-axww", "-o", "pid=,ppid=,time=,comm="])
-        .output()
-    {
-        Ok(o) => o.stdout,
-        Err(_) => return (HashMap::new(), HashMap::new()),
+    let ps = |fmt: &str| -> String {
+        Command::new("ps")
+            .args(["-axww", "-o", fmt])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default()
     };
-    let text = String::from_utf8_lossy(&out);
 
+    // Pass 1: pid, ppid, CPU time, and executable basename (handles spaces).
     let mut cpu_of: HashMap<i32, f64> = HashMap::new();
     let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    let mut roots: Vec<(i32, String)> = Vec::new();
-    let self_pid = std::process::id() as i32;
-
-    for line in text.lines() {
+    let mut comm_base: HashMap<i32, String> = HashMap::new();
+    for line in ps("pid=,ppid=,time=,comm=").lines() {
         let mut it = line.split_whitespace();
         let pid: i32 = match it.next().and_then(|s| s.parse().ok()) {
             Some(v) => v,
@@ -471,12 +496,40 @@ fn scan_agents() -> (
         };
         let ppid: i32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
         let cpu = parse_cputime(it.next().unwrap_or("0"));
-        let comm = it.collect::<Vec<_>>().join(" "); // executable path (may contain spaces)
-        let base = comm.rsplit('/').next().unwrap_or(&comm);
+        let comm = it.collect::<Vec<_>>().join(" ");
         cpu_of.insert(pid, cpu);
         children.entry(ppid).or_default().push(pid);
-        if pid != self_pid && AGENTS.contains(&base) {
-            roots.push((pid, base.to_string()));
+        comm_base.insert(pid, comm.rsplit('/').next().unwrap_or(&comm).to_string());
+    }
+
+    // Pass 2: full command lines, used only to resolve interpreter-launched
+    // agents (e.g. `python …/aider`) by their script name.
+    let mut cmd_of: HashMap<i32, String> = HashMap::new();
+    for line in ps("pid=,command=").lines() {
+        let line = line.trim_start();
+        if let Some((p, cmd)) = line.split_once(' ') {
+            if let Ok(pid) = p.parse::<i32>() {
+                cmd_of.insert(pid, cmd.to_string());
+            }
+        }
+    }
+
+    // Identify agent root processes.
+    let self_pid = std::process::id() as i32;
+    let mut roots: Vec<(i32, String)> = Vec::new();
+    for (&pid, base) in &comm_base {
+        if pid == self_pid {
+            continue;
+        }
+        let name = if AGENTS.contains(&base.as_str()) {
+            Some(base.clone())
+        } else if is_interpreter(base) {
+            cmd_of.get(&pid).and_then(|c| script_agent(c))
+        } else {
+            None
+        };
+        if let Some(n) = name {
+            roots.push((pid, n));
         }
     }
 
@@ -500,14 +553,18 @@ fn scan_agents() -> (
     (groups, sub)
 }
 
-/// Per-process cumulative network bytes (in + out) via `nettop`, keyed by pid.
-/// Diffing two snapshots yields the bytes transferred in between — the signal
-/// that an agent is actively talking to the LLM API.
+/// Per-process cumulative *external* network bytes (in + out) via `nettop`,
+/// keyed by pid. `-t external` excludes loopback, so local IPC chatter (MCP
+/// servers, language servers, plugins) is ignored and only real internet
+/// traffic — i.e. talking to the LLM API — counts. Diff two snapshots for the
+/// bytes transferred in between.
 fn net_bytes() -> std::collections::HashMap<i32, u64> {
     use std::collections::HashMap;
     let mut map = HashMap::new();
     let out = match Command::new("nettop")
-        .args(["-P", "-L", "1", "-J", "bytes_in,bytes_out", "-n", "-x"])
+        .args([
+            "-P", "-L", "1", "-t", "external", "-J", "bytes_in,bytes_out", "-n", "-x",
+        ])
         .output()
     {
         Ok(o) => o.stdout,
