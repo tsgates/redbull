@@ -72,8 +72,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
-echo "==> Ad-hoc code signing"
-codesign --force --deep --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+# Code signing. With a Developer ID Application certificate in the keychain,
+# sign for distribution: hardened runtime + secure timestamp, as notarization
+# requires. Otherwise fall back to ad-hoc. SIGN_IDENTITY overrides the choice
+# (a certificate name or SHA-1, or "-" to force ad-hoc).
+IDENTITY="${SIGN_IDENTITY-$(security find-identity -v -p codesigning 2>/dev/null \
+    | awk -F'"' '/Developer ID Application/ {print $2; exit}')}"
+if [ -n "$IDENTITY" ] && [ "$IDENTITY" != "-" ]; then
+    echo "==> Signing with: $IDENTITY"
+    codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
+    codesign --verify --strict --verbose=1 "$APP"
+else
+    echo "==> Ad-hoc code signing (no Developer ID certificate found)"
+    codesign --force --sign - "$APP" 2>/dev/null || echo "   (codesign skipped)"
+fi
 
 echo "==> Done: $(pwd)/$APP  ($(lipo -archs "$APP/Contents/MacOS/$BIN" 2>/dev/null || echo native))"
 echo "    Run it:    open $APP"
