@@ -38,8 +38,8 @@ brew install --cask tsgates/tap/redbull
 1. Grab the `.dmg` for your chip (**Apple Silicon** or **Intel**) from the
    [releases page](https://github.com/tsgates/redbull/releases/latest).
 2. Open it and drag **Redbull** into Applications.
-3. First launch: right-click → **Open** once (the app is ad-hoc signed), then click
-   the ⚡ in your menu bar.
+3. Launch it and click the ⚡ in your menu bar. Redbull is signed and notarized by
+   Apple, so it opens without Gatekeeper warnings.
 
 ### Build from source
 

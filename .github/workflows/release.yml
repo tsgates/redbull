@@ -1,15 +1,17 @@
 name: Release
 
-# Build the size-optimized arm64 Redbull.app and publish the .dmg/.zip to a
-# GitHub Release. Triggers when you push a version tag (e.g. v0.1.0), or
-# manually from the Actions tab.
+# Build the size-optimized Redbull.app packages as a CI check and keep them as
+# workflow artifacts. Releases are NOT published from here: CI has no Developer
+# ID certificate, so its builds are only ad-hoc signed. Publish releases from a
+# machine with the certificate and a notarytool profile (see release.sh):
+#     ./release.sh && gh release create vX.Y.Z dist/* --generate-notes
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # Run JavaScript actions on Node.js 24 (Node 20 is deprecated on runners).
 env:
@@ -43,10 +45,3 @@ jobs:
         with:
           name: redbull-arm64
           path: dist/*
-
-      - name: Publish to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          generate_release_notes: true
