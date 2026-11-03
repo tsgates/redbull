@@ -60,6 +60,29 @@ cargo run                # quick run (debug)
 - **Zero config** — no account, no preferences, no login item.
 - **Open source** — built on `caffeinate`; read every line.
 
+## Auto mode: stay awake while agents work
+
+Click the pulse button and Redbull watches your coding agents instead of a timer:
+the Mac stays awake while any agent session is working, and for 5 minutes after
+the last one goes idle. Each session is counted separately.
+
+Recognized agents: **Claude Code**, **Codex**, **GitHub Copilot CLI**,
+**Gemini CLI**, **opencode**, **Cursor CLI**, **Aider**, **Goose**, **Amp**,
+**Qwen Code**, **Crush**, **Factory Droid**, **Auggie**, **Kiro / Amazon Q**,
+**Cline**, **Kilo Code**, **OpenHands**, **Continue**, gptme, Plandex and
+Codebuff. Agents running in **VS Code** (Copilot chat, Cline, Roo Code),
+**Cursor**, **Windsurf** and **Zed** are watched through their session storage.
+
+A session counts as working when the agent reports it as busy (Claude Code),
+when its transcript keeps growing, when its terminal shows output, when it
+runs heavy builds or tests, or (for headless runs) while a tool call is in
+progress. An agent waiting at its prompt doesn't count, and neither do idle
+network chatter or background servers. To see what Redbull sees:
+
+```sh
+/Applications/Redbull.app/Contents/MacOS/redbull scan
+```
+
 ## License
 
 [MIT](LICENSE)
