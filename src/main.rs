@@ -36,80 +36,37 @@ const POPOVER_W: f64 = 264.0;
 const POPOVER_H: f64 = 116.0;
 
 // --- Agent auto-watch ---------------------------------------------------------
-// Coding-agent CLIs to watch for. Matched against each process's executable
-// basename, or the script name when launched via an interpreter.
-const AGENTS: &[&str] = &[
-    // native-binary CLIs (matched by executable basename)
-    "claude", "codex", "copilot", "opencode", "cursor-agent", "gemini", "goose",
-    "amp", "qwen", "crush", "droid", "cody", "auggie", "qchat", "openhands",
-    "plandex", "aichat", "codebuff",
-    // interpreter-launched CLIs (matched by their script name; see scan_agents)
-    "aider", "gptme", "mentat", "ra-aid", "interpreter",
-];
+// Detection lives in agents.rs; the monitor samples it every few seconds.
+mod agents;
 
-/// Interpreters that may launch an agent as a script (we then match the script
-/// name, not the interpreter). Covers e.g. `python …/aider`, `node …/gemini`.
-fn is_interpreter(base: &str) -> bool {
-    matches!(base, "node" | "bun" | "deno" | "ruby" | "npx" | "tsx" | "ts-node")
-        || base.starts_with("python")
-}
+/// Seconds between agent scans (each costs two `ps` calls plus a few stats).
+const SCAN_SECS: u64 = 5;
 
-/// GUI coding agents embedded in editors — matched by the executable basename
-/// of their extension-host / app process, mapped to a friendly name. These have
-/// no tty and noisy CPU (editing, indexing), so they're judged by *external
-/// network* only (the editor talking to an LLM API).
-const GUI_APPS: &[(&str, &str)] = &[
-    ("Code Helper (Plugin)", "vscode"),    // VS Code extension host (Copilot, Cline, …)
-    ("Cursor Helper (Plugin)", "cursor"),  // Cursor
-    ("Windsurf Helper (Plugin)", "windsurf"),
-    ("zed", "zed"),                        // Zed (native)
-];
-
-fn is_gui_agent(name: &str) -> bool {
-    GUI_APPS.iter().any(|(_, n)| *n == name)
-}
-
-/// For an interpreter command line, return the agent name iff the *script* (the
-/// first non-flag argument) is a known agent. Only the script is checked — flag
-/// values are ignored — so paths like `--probe …/copilot` don't false-positive.
-fn script_agent(cmd: &str) -> Option<String> {
-    let mut toks = cmd.split_whitespace();
-    toks.next(); // argv0 = the interpreter itself
-    for t in toks {
-        if t.starts_with('-') {
-            continue; // skip flags like -u, -m
-        }
-        let base = t.rsplit('/').next().unwrap_or(t);
-        return AGENTS.contains(&base).then(|| base.to_string());
-    }
-    None
-}
-// An agent's process subtree counts as "working" when, between samples, it
-// either transfers network data above BUSY_BYTES_PER_SEC *or* burns more than
-// BUSY_CORES CPU cores. Network is the primary signal — agents spend most of
-// their busy time blocked on the LLM API (lots of I/O, ~no CPU) — while CPU
-// catches local work like builds/tests the agent runs. Both are measured as
-// deltas between samples, so they reflect *current* activity, not lifetime use.
-const BUSY_BYTES_PER_SEC: f64 = 2000.0;
-const BUSY_CORES: f64 = 0.03;
-/// Keep the Mac awake this long after an agent's last observed activity; once no
-/// agent has been active for this window, Redbull releases the wake assertion
-/// (it keeps watching, so it re-wakes when an agent gets busy again).
-const GRACE_SECS: u64 = 300; // 5 minutes
-
-#[derive(Default)]
 struct AppState {
     child: Option<Child>,
     expiry: Option<Instant>,
     index: usize,
     // Auto-watch mode: keep awake while coding agents are working.
     auto: bool,
-    agents: Vec<String>, // agent names currently counted as working
-    present: bool,       // any known agent process is running at all
-    active_since: std::collections::HashMap<String, Instant>, // name -> last time it was busy
-    prev_cpu: std::collections::HashMap<i32, f64>, // pid -> CPU seconds at last sample
-    prev_net: std::collections::HashMap<i32, u64>, // pid -> bytes in+out at last sample
-    prev_sample: Option<Instant>,
+    working: usize, // agent sessions currently working
+    present: bool,  // any known agent process is running at all
+    detector: agents::Detector,
+    last_scan: Option<Instant>,
+}
+
+impl Default for AppState {
+    fn default() -> Self {
+        AppState {
+            child: None,
+            expiry: None,
+            index: 0,
+            auto: false,
+            working: 0,
+            present: false,
+            detector: agents::Detector::new(agents::Env::from_process()),
+            last_scan: None,
+        }
+    }
 }
 
 struct Ivars {
@@ -197,7 +154,8 @@ impl Controller {
             let mut st = self.ivars().state.borrow_mut();
             let st = &mut *st;
             st.auto = false;
-            st.active_since.clear();
+            st.detector.reset();
+            st.working = 0;
             st.present = false;
             st.index = i;
             match i {
@@ -218,14 +176,10 @@ impl Controller {
             stop(&mut st.child, &mut st.expiry); // hand control to the monitor
             st.index = 0;
             st.auto = on;
-            st.active_since.clear();
-            st.prev_cpu.clear();
-            st.prev_net.clear();
-            st.prev_sample = None;
+            st.detector.reset();
+            st.last_scan = None;
+            st.working = 0;
             st.present = false;
-            if !on {
-                st.agents.clear();
-            }
         }
         if on {
             self.monitor(); // scan immediately so the popover shows status now
@@ -233,68 +187,21 @@ impl Controller {
         self.refresh();
     }
 
-    /// Auto-watch step (each tick): for *each* agent, measure the network I/O and
-    /// CPU its process subtree used since the last sample. An agent is "working"
-    /// if either exceeds threshold, or it was working within the grace window.
-    /// Keep the Mac awake only while at least one agent is working.
+    /// Auto-watch step: every SCAN_SECS, sample the agent detector. Keep the
+    /// Mac awake while any agent session is working, and for a grace period
+    /// after the last one goes idle (see agents.rs for the signals).
     fn monitor(&self) {
-        let (groups, cpu_now, tty_of) = scan_agents();
-        let net_now = net_bytes();
-        let now = Instant::now();
         let mut st = self.ivars().state.borrow_mut();
         let st = &mut *st;
-
-        let elapsed = st
-            .prev_sample
-            .map(|t| now.duration_since(t).as_secs_f64())
-            .unwrap_or(1.0)
-            .max(0.2);
-
-        let mut working: Vec<String> = Vec::new();
-        for (name, pids) in &groups {
-            // Primary signal: did any of the agent's terminals get output
-            // recently? (mtime). Captures streaming, spinners, tool logs —
-            // exactly "the agent is doing work", attended or not.
-            let tty_working = pids
-                .iter()
-                .filter_map(|p| tty_of.get(p))
-                .filter_map(|t| tty_output_age(t))
-                .any(|age| age < GRACE_SECS);
-
-            // Fallback for headless agents (no tty): external network + CPU.
-            let (mut cpu_delta, mut net_delta) = (0.0f64, 0u64);
-            for pid in pids {
-                let c = cpu_now.get(pid).copied().unwrap_or(0.0);
-                let pc = st.prev_cpu.get(pid).copied().unwrap_or(c);
-                cpu_delta += (c - pc).max(0.0);
-                let b = net_now.get(pid).copied().unwrap_or(0);
-                let pb = st.prev_net.get(pid).copied().unwrap_or(b);
-                net_delta += b.saturating_sub(pb);
-            }
-            // GUI editors: network only (their CPU is noisy). Others: net or CPU.
-            let cpu_busy = !is_gui_agent(name) && cpu_delta / elapsed >= BUSY_CORES;
-            if net_delta as f64 / elapsed >= BUSY_BYTES_PER_SEC || cpu_busy {
-                st.active_since.insert(name.clone(), now);
-            }
-            let io_working = st
-                .active_since
-                .get(name)
-                .is_some_and(|t| now.duration_since(*t).as_secs() < GRACE_SECS);
-
-            if tty_working || io_working {
-                working.push(name.clone());
-            }
+        if st.last_scan.is_some_and(|t| t.elapsed().as_secs() < SCAN_SECS) {
+            return;
         }
+        st.last_scan = Some(Instant::now());
+        let report = st.detector.step();
+        st.working = report.working();
+        st.present = !report.verdicts.is_empty();
 
-        st.active_since.retain(|n, _| groups.contains_key(n));
-        working.sort();
-        st.prev_cpu = cpu_now;
-        st.prev_net = net_now;
-        st.prev_sample = Some(now);
-        st.present = !groups.is_empty();
-        st.agents = working;
-
-        let keep = !st.agents.is_empty();
+        let keep = st.detector.keep_awake();
         if keep && st.child.is_none() {
             start(&mut st.child, &mut st.expiry, None); // indefinite while working
         } else if !keep && st.child.is_some() {
@@ -343,7 +250,7 @@ impl Controller {
             (true, Some(until)) => remaining_label(until),
             (true, None) => "∞".to_string(),
         };
-        let n = st.agents.len(); // agents currently working
+        let n = st.working; // agent sessions currently working
         // Fallback text when nothing is working (active shows count + icon).
         let auto_text = if st.present { "idle" } else { "watching" };
         let js = format!(
@@ -362,40 +269,11 @@ fn ns(s: &str) -> Retained<NSString> {
 }
 
 fn main() {
-    // Debug: `redbull scan` samples agents twice (~1.5s apart) and reports each
-    // agent's recent network + CPU and whether it counts as "working".
-    if std::env::args().any(|a| a == "scan") {
-        let (groups, ca, tty_of) = scan_agents();
-        let na = net_bytes();
-        std::thread::sleep(Duration::from_millis(1500));
-        let (_, cb, _) = scan_agents();
-        let nb = net_bytes();
-        if groups.is_empty() {
-            println!("no coding agents running");
-        }
-        for (name, pids) in &groups {
-            let (mut cpu, mut net) = (0.0f64, 0u64);
-            for pid in pids {
-                let c = cb.get(pid).copied().unwrap_or(0.0);
-                cpu += (c - ca.get(pid).copied().unwrap_or(c)).max(0.0);
-                let b = nb.get(pid).copied().unwrap_or(0);
-                net += b.saturating_sub(na.get(pid).copied().unwrap_or(b));
-            }
-            let (cores, bps) = (cpu / 1.5, net as f64 / 1.5);
-            let tty_age = pids
-                .iter()
-                .filter_map(|p| tty_of.get(p))
-                .filter_map(|t| tty_output_age(t))
-                .min();
-            let tty_str = tty_age.map_or("none".to_string(), |a| format!("{a}s"));
-            let working = bps >= BUSY_BYTES_PER_SEC
-                || cores >= BUSY_CORES
-                || tty_age.is_some_and(|a| a < GRACE_SECS);
-            println!(
-                "{name:<10} procs:{:<3} tty_output:{tty_str:>6} ago  net:{bps:>8.0} B/s  cpu:{cores:>6.3}  working:{working}",
-                pids.len()
-            );
-        }
+    // Debug: `redbull scan [secs]` samples agents twice and reports, per
+    // session, each signal and whether it counts as working.
+    if std::env::args().nth(1).as_deref() == Some("scan") {
+        let gap = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(2.0);
+        scan(gap);
         return;
     }
 
@@ -500,163 +378,34 @@ fn stop(child: &mut Option<Child>, expiry: &mut Option<Instant>) {
     *expiry = None;
 }
 
-// --- Coding-agent detection --------------------------------------------------
+// --- `redbull scan` -----------------------------------------------------------
 
-/// Scan running processes for coding agents. Returns a map of agent name ->
-/// every pid in that agent's process subtree(s), plus a map of pid -> CPU
-/// seconds, so the caller can derive *per-agent* recent activity from deltas.
-///
-/// Matches against `comm` (the executable path, no arguments) so directory or
-/// argument paths that merely contain an agent's name don't false-positive.
-fn scan_agents() -> (
-    std::collections::HashMap<String, Vec<i32>>,
-    std::collections::HashMap<i32, f64>,
-    std::collections::HashMap<i32, String>,
-) {
-    use std::collections::{HashMap, HashSet};
-    let ps = |fmt: &str| -> String {
-        Command::new("ps")
-            .args(["-axww", "-o", fmt])
-            .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default()
-    };
-
-    // Pass 1: pid, ppid, controlling tty, CPU time, executable basename.
-    let mut cpu_of: HashMap<i32, f64> = HashMap::new();
-    let mut tty_of: HashMap<i32, String> = HashMap::new();
-    let mut children: HashMap<i32, Vec<i32>> = HashMap::new();
-    let mut comm_base: HashMap<i32, String> = HashMap::new();
-    for line in ps("pid=,ppid=,tty=,time=,comm=").lines() {
-        let mut it = line.split_whitespace();
-        let pid: i32 = match it.next().and_then(|s| s.parse().ok()) {
-            Some(v) => v,
-            None => continue,
+fn scan(gap_secs: f64) {
+    let mut d = agents::Detector::new(agents::Env::from_process());
+    d.step();
+    std::thread::sleep(Duration::from_secs_f64(gap_secs));
+    let report = d.step();
+    if report.verdicts.is_empty() {
+        println!("no coding agents running");
+    }
+    for v in &report.verdicts {
+        let status = match v.status {
+            Some(true) => "busy",
+            Some(false) => "idle",
+            None => "-",
         };
-        let ppid: i32 = it.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-        let tty = it.next().unwrap_or("??");
-        let cpu = parse_cputime(it.next().unwrap_or("0"));
-        let comm = it.collect::<Vec<_>>().join(" ");
-        cpu_of.insert(pid, cpu);
-        if tty != "??" && tty != "?" {
-            tty_of.insert(pid, tty.to_string());
-        }
-        children.entry(ppid).or_default().push(pid);
-        comm_base.insert(pid, comm.rsplit('/').next().unwrap_or(&comm).to_string());
+        let tty = v.tty_age.map_or("-".to_string(), |a| format!("{a}s"));
+        let reason = v.reason.map_or("-".to_string(), |r| format!("{r:?}").to_lowercase());
+        println!(
+            "{:<13} pid:{:<6} procs:{:<3} status:{status:<4} tty:{tty:>6}  cpu:{:>5.2}  {} ({reason})",
+            v.agent,
+            v.pid,
+            v.procs,
+            v.cores,
+            if v.working { "WORKING" } else { "idle" },
+        );
     }
-
-    // Pass 2: full command lines, used only to resolve interpreter-launched
-    // agents (e.g. `python …/aider`) by their script name.
-    let mut cmd_of: HashMap<i32, String> = HashMap::new();
-    for line in ps("pid=,command=").lines() {
-        let line = line.trim_start();
-        if let Some((p, cmd)) = line.split_once(' ') {
-            if let Ok(pid) = p.parse::<i32>() {
-                cmd_of.insert(pid, cmd.to_string());
-            }
-        }
-    }
-
-    // Identify agent root processes.
-    let self_pid = std::process::id() as i32;
-    let mut roots: Vec<(i32, String)> = Vec::new();
-    for (&pid, base) in &comm_base {
-        if pid == self_pid {
-            continue;
-        }
-        let name = if AGENTS.contains(&base.as_str()) {
-            Some(base.clone())
-        } else if let Some((_, friendly)) = GUI_APPS.iter().find(|(b, _)| *b == base) {
-            Some(friendly.to_string())
-        } else if is_interpreter(base) {
-            cmd_of.get(&pid).and_then(|c| script_agent(c))
-        } else {
-            None
-        };
-        if let Some(n) = name {
-            roots.push((pid, n));
-        }
-    }
-
-    // Walk each agent's subtree (each pid counted once), grouping pids by name.
-    let mut groups: HashMap<String, Vec<i32>> = HashMap::new();
-    let mut sub: HashMap<i32, f64> = HashMap::new();
-    let mut seen = HashSet::new();
-    for (root, name) in roots {
-        let mut stack = vec![root];
-        while let Some(p) = stack.pop() {
-            if !seen.insert(p) {
-                continue;
-            }
-            sub.insert(p, cpu_of.get(&p).copied().unwrap_or(0.0));
-            groups.entry(name.clone()).or_default().push(p);
-            if let Some(ch) = children.get(&p) {
-                stack.extend(ch);
-            }
-        }
-    }
-    // Keep only the ttys belonging to agent subtrees.
-    tty_of.retain(|pid, _| sub.contains_key(pid));
-    (groups, sub, tty_of)
-}
-
-/// Seconds since the given tty device last had output written to it (mtime).
-/// `None` if it can't be read. Fresh mtime == the agent recently produced output.
-fn tty_output_age(tty: &str) -> Option<u64> {
-    std::fs::metadata(format!("/dev/{tty}"))
-        .ok()?
-        .modified()
-        .ok()?
-        .elapsed()
-        .ok()
-        .map(|d| d.as_secs())
-}
-
-/// Per-process cumulative *external* network bytes (in + out) via `nettop`,
-/// keyed by pid. `-t external` excludes loopback, so local IPC chatter (MCP
-/// servers, language servers, plugins) is ignored and only real internet
-/// traffic — i.e. talking to the LLM API — counts. Diff two snapshots for the
-/// bytes transferred in between.
-fn net_bytes() -> std::collections::HashMap<i32, u64> {
-    use std::collections::HashMap;
-    let mut map = HashMap::new();
-    let out = match Command::new("nettop")
-        .args([
-            "-P", "-L", "1", "-t", "external", "-J", "bytes_in,bytes_out", "-n", "-x",
-        ])
-        .output()
-    {
-        Ok(o) => o.stdout,
-        Err(_) => return map,
-    };
-    for line in String::from_utf8_lossy(&out).lines() {
-        let f: Vec<&str> = line.split(',').collect();
-        if f.len() < 3 {
-            continue;
-        }
-        // f[0] is "name.pid" (the name may contain dots/spaces; pid is last).
-        let pid = match f[0].rsplit('.').next().and_then(|s| s.trim().parse::<i32>().ok()) {
-            Some(p) => p,
-            None => continue,
-        };
-        let bytes = f[1].trim().parse::<u64>().unwrap_or(0) + f[2].trim().parse::<u64>().unwrap_or(0);
-        *map.entry(pid).or_insert(0) += bytes;
-    }
-    map
-}
-
-/// Parse a `ps -o time` value ("[D-][H:]M:SS.ss") into seconds.
-fn parse_cputime(s: &str) -> f64 {
-    let s = s.trim();
-    let (days, rest) = match s.split_once('-') {
-        Some((d, r)) => (d.parse::<f64>().unwrap_or(0.0), r),
-        None => (0.0, s),
-    };
-    let mut secs = 0.0f64;
-    for p in rest.split(':') {
-        secs = secs * 60.0 + p.parse::<f64>().unwrap_or(0.0);
-    }
-    secs + days * 86400.0
+    println!("working: {}", report.working());
 }
 
 /// Remaining-time label whose resolution sharpens as the timer winds down:
@@ -816,7 +565,7 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <div class="head">
 <span class="logo"><svg width="13" height="13" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#fff"/></svg></span>
 <span class="name">Redbull</span>
-<button class="auto" id="auto" title="Keep awake while coding agents (claude, codex, copilot, opencode, …) are working">
+<button class="auto" id="auto" title="Keep awake while coding agents (Claude Code, Codex, Copilot, Gemini, Cursor, Aider, …) are working">
 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg></button>
 <span class="pill off" id="pill">Off</span>
 <button class="x" onclick="post('quit')" title="Quit" aria-label="Quit">&times;</button>
