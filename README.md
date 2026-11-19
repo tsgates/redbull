@@ -83,6 +83,25 @@ network chatter or background servers. To see what Redbull sees:
 /Applications/Redbull.app/Contents/MacOS/redbull scan
 ```
 
+## Agent activity: see what your agents are doing
+
+Click the list button in the popover to open the **Agent activity** window: every
+running agent session, whether it's working (and why), its project, the commands
+it's running right now, and a live feed of what it has been up to.
+
+- **Claude Code**, **Codex** and **Copilot CLI** — prompts, tool calls and replies,
+  read from the session's own transcript.
+- **Every other agent** — when it starts and stops working, and the commands it
+  launches (builds, tests, git…), seen in the process table.
+
+Pick a session for its own feed, or stay on *All activity* for everything at
+once. Redbull only reads these files, locally, and only while the window is open;
+nothing leaves your Mac. The same data as JSON:
+
+```sh
+/Applications/Redbull.app/Contents/MacOS/redbull activity
+```
+
 ## License
 
 [MIT](LICENSE)

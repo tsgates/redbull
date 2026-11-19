@@ -526,7 +526,7 @@ impl Env {
             vars: std::env::vars().collect(),
         }
     }
-    fn var(&self, k: &str) -> Option<&str> {
+    pub fn var(&self, k: &str) -> Option<&str> {
         if k.is_empty() {
             return None;
         }
@@ -648,7 +648,7 @@ fn names_project(key: &Path, cwd: &Path) -> bool {
 }
 
 /// When a process started, from its age in seconds.
-fn started(wall: SystemTime, age: u64) -> SystemTime {
+pub fn started(wall: SystemTime, age: u64) -> SystemTime {
     wall - Duration::from_secs(age)
 }
 
@@ -680,7 +680,7 @@ pub fn tty_age(tty: &str) -> Option<u64> {
 
 /// Working directories of the given pids (via lsof; used only for agents with
 /// project-local stores).
-fn cwds(pids: &[i32]) -> HashMap<i32, PathBuf> {
+pub fn cwds(pids: &[i32]) -> HashMap<i32, PathBuf> {
     let mut map = HashMap::new();
     if pids.is_empty() {
         return map;
@@ -723,6 +723,9 @@ pub struct Verdict {
     pub status: Option<bool>,
     pub tty_age: Option<u64>,
     pub cores: f64,
+    pub age: u64,       // seconds since the session's root process started
+    pub pids: Vec<i32>, // the session's process subtree (root included)
+    pub gui: bool,      // editor host rather than a CLI agent
 }
 
 #[derive(Default)]
@@ -835,6 +838,9 @@ impl Detector {
                 status,
                 tty_age,
                 cores,
+                age: inst.age,
+                pids: inst.pids.clone(),
+                gui: agent.gui,
             });
         }
 

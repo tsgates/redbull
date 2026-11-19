@@ -1,0 +1,137 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;background:#1e1e22;color:#f2f2f4;font:13px/1.35 -apple-system,BlinkMacSystemFont,'SF Pro Text',sans-serif;-webkit-user-select:none;user-select:none;overflow:hidden;cursor:default}
+body{display:flex;flex-direction:column}
+.mono{font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:12px}
+header{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid rgba(255,255,255,.08);flex:none}
+header .sum{font-weight:600}
+header .mode{margin-left:auto;color:#8e8e93;font-size:12px}
+.seg{display:flex;border:1px solid rgba(255,255,255,.14);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;color:#a9a9ad;font:inherit;font-size:12px;padding:3px 10px;cursor:pointer}
+.seg button.on{background:rgba(255,255,255,.14);color:#fff}
+main{flex:1;display:flex;min-height:0}
+#list{width:300px;flex:none;overflow-y:auto;border-right:1px solid rgba(255,255,255,.08);padding:6px}
+.row{display:grid;grid-template-columns:14px 1fr auto;column-gap:6px;row-gap:1px;padding:7px 8px;border-radius:8px;cursor:pointer}
+.row:hover{background:rgba(255,255,255,.05)}
+.row.sel{background:rgba(226,75,74,.22)}
+.dot{width:8px;height:8px;border-radius:50%;background:#55555c;margin-top:5px}
+.dot.on{background:#E24B4A;animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{50%{opacity:.35}}
+.row .t{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .ag{color:#a9a9ad;font-size:11px;white-space:nowrap}
+.row .sub{grid-column:2/4;color:#8e8e93;font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .spark{grid-column:2/4;height:8px;margin-top:3px;display:block}
+#detail{flex:1;min-width:0;display:flex;flex-direction:column}
+#head{padding:12px 16px 8px;flex:none}
+#head h1{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#head .cwd{color:#8e8e93;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;-webkit-user-select:text;user-select:text}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.chip{font-size:11.5px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.1);color:#cdcdd1;white-space:nowrap}
+.chip.on{background:#E24B4A;color:#fff}
+#run{padding:0 16px 8px;flex:none}
+#run:empty{display:none}
+.lab{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#8e8e93;margin:6px 0 4px}
+.cmd{display:flex;gap:10px;padding:2px 0}
+.cmd span:first-child{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;-webkit-user-select:text;user-select:text}
+.cmd span:last-child{color:#8e8e93}
+#feed{flex:1;overflow-y:auto;padding:4px 16px 14px;border-top:1px solid rgba(255,255,255,.08);-webkit-user-select:text;user-select:text;cursor:auto}
+.ev{display:flex;gap:10px;padding:3px 0;align-items:baseline}
+.ev .tm{color:#6e6e76;flex:none;font-variant-numeric:tabular-nums;font-size:11.5px}
+.ev .who{color:#a9a9ad;flex:none;width:130px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:11.5px;cursor:pointer}
+.ev .x{flex:1;min-width:0;word-break:break-word;overflow-wrap:anywhere}
+.ev.state .x{color:#8e8e93;font-style:italic}
+.ev.prompt .x{color:#8ab4ff}
+.ev.prompt .x:before{content:'› ';color:#5b8def}
+.ev.proc .x:before{content:'$ ';color:#6e6e76}
+.ev.reply .x{color:#d6d6da}
+.empty{color:#8e8e93;padding:28px 16px;text-align:center}
+.note{color:#6e6e76;font-size:11.5px;padding:8px 0}
+</style></head><body>
+<header>
+<span class="sum" id="sum">Agent activity</span>
+<div class="seg"><button id="fAll" class="on">All</button><button id="fWork">Working</button></div>
+<span class="mode" id="mode"></span>
+</header>
+<main>
+<div id="list"></div>
+<div id="detail"><div id="head"></div><div id="run"></div><div id="feed"></div></div>
+</main>
+<script>
+var NAMES={claude:'Claude Code',codex:'Codex',copilot:'Copilot CLI',gemini:'Gemini CLI',opencode:'opencode','cursor-agent':'Cursor CLI',aider:'Aider',goose:'Goose',amp:'Amp',qwen:'Qwen Code',crush:'Crush',droid:'Droid',auggie:'Auggie',kiro:'Kiro',cline:'Cline',kilo:'Kilo Code',openhands:'OpenHands','continue':'Continue',vscode:'VS Code',cursor:'Cursor',windsurf:'Windsurf',zed:'Zed'};
+var WHY={status:'reports busy',store:'writing transcript',tty:'terminal output',cpu:'heavy CPU',tool:'running a tool'};
+var D={now:0,sessions:[],events:[]},sel=0,onlyWork=false,feedKey='';
+var $=function(id){return document.getElementById(id)};
+function post(m){try{window.webkit.messageHandlers.rb.postMessage(m);}catch(e){}}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+function nm(a){return NAMES[a]||a}
+function base(p){p=p.replace(/\/+$/,'');return p.slice(p.lastIndexOf('/')+1)}
+function tilde(p){return p.replace(/^\/Users\/[^\/]+/,'~')}
+function short(x,s){if(s&&s.cwd&&s.cwd.length>1)x=x.split(s.cwd+'/').join('');return x.replace(/\/Users\/[^\/\s]+/g,'~')}
+function title(s){return s.title||(s.cwd&&base(s.cwd))||nm(s.agent)}
+function dur(n){if(n<60)return n+'s';if(n<3600)return Math.floor(n/60)+'m';if(n<86400){var h=Math.floor(n/3600),m=Math.floor(n%3600/60);return h+'h'+(m?' '+m+'m':'')}return Math.floor(n/86400)+'d'}
+function clock(t){var d=new Date(t*1000),p=function(n){return(n<10?'0':'')+n};var s=p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());if(D.now-t>20*3600)s=(d.getMonth()+1)+'/'+d.getDate()+' '+s;return s}
+function spark(h){var o='<svg class="spark" width="180" height="8" viewBox="0 0 180 8">';var off=0;for(var i=0;i<h.length;i++){var w=h[i]=='1';o+='<rect x="'+(off+i)*3+'" y="'+(w?0:5)+'" width="2" height="'+(w?8:3)+'" rx="1" fill="'+(w?'#E24B4A':'#4a4a52')+'"/>'}return o+'</svg>'}
+function latest(pid){var b=null;for(var i=0;i<D.events.length;i++){var e=D.events[i];if(e.p==pid&&e.k!='state'&&(!b||e.t>b.t||(e.t==b.t&&e.q>b.q)))b=e}return b}
+function nowLine(s){if(s.running.length)return s.running[s.running.length-1].cmd;var e=latest(s.pid);if(e&&(s.working||D.now-e.t<120))return short(e.x,s);return s.working?(WHY[s.reason]||'working'):'idle'}
+function order(a,b){return (b.working-a.working)||(a.age-b.age)||(a.pid-b.pid)}
+function byPid(pid){for(var i=0;i<D.sessions.length;i++)if(D.sessions[i].pid==pid)return D.sessions[i];return null}
+
+function renderList(){
+  var ss=D.sessions.slice().sort(order),n=0;
+  ss.forEach(function(s){if(s.working)n++});
+  $('sum').textContent=ss.length?(n+' working · '+ss.length+' session'+(ss.length==1?'':'s')):'Agent activity';
+  $('mode').textContent=D.auto?(D.awake?'Auto mode · keeping the Mac awake':'Auto mode · nothing working'):'Auto mode off · watching only';
+  var h='<div class="row'+(sel==0?' sel':'')+'" data-pid="0"><span></span><span class="t">All activity</span><span class="ag"></span></div>';
+  ss.forEach(function(s){
+    if(onlyWork&&!s.working&&s.pid!=sel)return;
+    var sub=(s.title&&s.cwd?base(s.cwd)+' · ':'')+nowLine(s);
+    h+='<div class="row'+(s.pid==sel?' sel':'')+'" data-pid="'+s.pid+'" title="'+esc(nm(s.agent)+' · pid '+s.pid+(s.cwd?'\n'+s.cwd:''))+'">'
+      +'<span class="dot'+(s.working?' on':'')+'"></span><span class="t">'+esc(title(s))+'</span><span class="ag">'+esc(nm(s.agent))+'</span>'
+      +'<span class="sub">'+esc(sub)+'</span>'+spark(s.hist)+'</div>';
+  });
+  if(!ss.length)h+='<div class="empty">No coding agents running</div>';
+  var l=$('list'),top=l.scrollTop;l.innerHTML=h;l.scrollTop=top;
+}
+
+function renderHead(){
+  var s=sel?byPid(sel):null,h='',r='';
+  if(!sel){h='<h1>All activity</h1><div class="cwd">Prompts, tool calls and commands across every agent session</div>'}
+  else if(!s){h='<h1>Session ended</h1><div class="cwd">pid '+sel+'</div>'}
+  else{
+    h='<h1>'+esc(title(s))+'</h1>'+(s.cwd?'<div class="cwd">'+esc(tilde(s.cwd))+'</div>':'')+'<div class="chips">'
+      +'<span class="chip'+(s.working?' on':'')+'">'+(s.working?'working'+(WHY[s.reason]?' · '+WHY[s.reason]:''):'idle')+'</span>'
+      +'<span class="chip">'+esc(nm(s.agent))+'</span><span class="chip">pid '+s.pid+'</span>'
+      +'<span class="chip">up '+dur(s.age)+'</span><span class="chip">'+s.cores.toFixed(2)+' cores</span>'
+      +'<span class="chip">'+s.procs+' process'+(s.procs==1?'':'es')+'</span></div>';
+    if(s.running.length){r='<div class="lab">Running now</div>';s.running.forEach(function(c){r+='<div class="cmd mono"><span>'+esc(c.cmd)+'</span><span>'+dur(c.age)+'</span></div>'})}
+  }
+  $('head').innerHTML=h;$('run').innerHTML=r;
+}
+
+function renderFeed(){
+  var ev=D.events.filter(function(e){return !sel||e.p==sel});
+  var key=sel+':'+ev.length+':'+(ev.length?ev[ev.length-1].q:0)+':'+(sel?'':D.sessions.map(title).join('|'));
+  if(key==feedKey)return;feedKey=key;
+  ev.sort(function(a,b){return (b.t-a.t)||(b.q-a.q)});
+  var h='';
+  ev.slice(0,300).forEach(function(e){
+    var who='';
+    if(!sel){var s=byPid(e.p);who='<span class="who" data-pid="'+(s?e.p:'')+'" title="'+esc(nm(e.a)+' · pid '+e.p)+'">'+esc(s?title(s):nm(e.a))+'</span>'}
+    h+='<div class="ev '+e.k+'"><span class="tm">'+clock(e.t)+'</span>'+who+'<span class="x'+(e.k=='tool'||e.k=='proc'?' mono':'')+'">'+esc(short(e.x,byPid(e.p)))+'</span></div>';
+  });
+  var s=sel?byPid(sel):null;
+  if(!ev.length)h='<div class="empty">'+(D.sessions.length?'No activity seen yet':'Start a coding agent and its activity shows up here')+'</div>';
+  if(s&&!s.log)h+='<div class="note">'+(s.gui?'Editor-hosted agents are tracked by working state only.':'No readable transcript for this agent — showing its state changes and the commands it launches.')+'</div>';
+  $('feed').innerHTML=h;
+}
+
+function render(){renderList();renderHead();renderFeed()}
+function pick(pid){sel=pid;feedKey='';render();$('feed').scrollTop=0}
+window.rbActivity=function(d){D=d;render()};
+$('list').addEventListener('click',function(e){var r=e.target.closest('.row');if(r)pick(+r.dataset.pid)});
+$('feed').addEventListener('click',function(e){var w=e.target.closest('.who');if(w&&w.dataset.pid)pick(+w.dataset.pid)});
+function filt(w){onlyWork=w;$('fAll').className=w?'':'on';$('fWork').className=w?'on':'';renderList()}
+$('fAll').onclick=function(){filt(false)};$('fWork').onclick=function(){filt(true)};
+document.addEventListener('keydown',function(e){if(e.metaKey&&e.key=='w'){e.preventDefault();post('activity:close')}if(e.key=='Escape')pick(0)});
+render();
+</script></body></html>
