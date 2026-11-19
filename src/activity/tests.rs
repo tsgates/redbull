@@ -113,6 +113,40 @@ fn copilot_transcript_lines() {
     assert_eq!(events_of("copilot", user), [(Kind::Prompt, "rename it".to_string())]);
 }
 
+#[test]
+fn pi_transcript_lines() {
+    let user = r#"{"type":"message","id":"a1","timestamp":"2026-11-19T01:02:23.000Z","message":{"role":"user","content":"Hello"}}"#;
+    assert_eq!(events_of("pi", user), [(Kind::Prompt, "Hello".to_string())]);
+    let asst = r#"{"type":"message","message":{"role":"assistant","content":[
+        {"type":"thinking","thinking":"…"},{"type":"text","text":"On it."},
+        {"type":"toolCall","id":"t1","name":"bash","arguments":{"command":"ls -la"}}]}}"#;
+    assert_eq!(
+        events_of("pi", asst),
+        [(Kind::Reply, "On it.".to_string()), (Kind::Tool, "bash: ls -la".to_string())]
+    );
+    let result = r#"{"type":"message","message":{"role":"toolResult","toolName":"bash","content":[{"type":"text","text":"out"}]}}"#;
+    assert!(events_of("pi", result).is_empty());
+    assert!(events_of("pi", r#"{"type":"session","version":3,"cwd":"/x"}"#).is_empty());
+}
+
+#[test]
+fn pi_transcript_is_found_by_its_cwd_header() {
+    let home = tmp_home();
+    let env = env_at(&home);
+    let call = "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"toolCall\",\"name\":\"read\",\"arguments\":{\"path\":\"a.rs\"}}]}}\n";
+    let dir = home.join(".pi/agent/sessions");
+    write(&dir.join("--x--/1_a.jsonl"), &format!("{{\"type\":\"session\",\"cwd\":\"/x\"}}\n{call}"));
+    // oh-my-pi shares the dialect, in its own directory.
+    write(&home.join(".omp/agent/sessions/-y/1_b.jsonl"), &format!("{{\"type\":\"session\",\"cwd\":\"/y\"}}\n{call}"));
+    let mut d = Detector::new(env.clone());
+    let mut t = Tracker::new();
+    let procs = table(&[(500, proc(1, 1000, "pi", "pi")), (501, proc(1, 1000, "omp", "omp"))]);
+    scan(&mut d, &mut t, &env, &procs, true);
+    let got: Vec<_> = t.events().iter().map(|e| (e.agent, e.text.clone())).collect();
+    assert_eq!(got.len(), 2, "{got:?}");
+    assert!(got.contains(&("pi", "read: a.rs".to_string())) && got.contains(&("omp", "read: a.rs".to_string())));
+}
+
 /// aider (1000s old) with an MCP-style boot helper, and a shell running a
 /// build that has its own children.
 fn aider_tree(build: bool) -> HashMap<i32, Proc> {

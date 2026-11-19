@@ -8,8 +8,9 @@
 //     the process table. Boot helpers (MCP servers), shells and the agent's
 //     own wrapper processes aren't reported, only the commands under them.
 //
-// Agents with a readable transcript (Claude Code, Codex, Copilot CLI) get a
-// richer feed instead of process events: prompts, tool calls and replies,
+// Agents with a readable transcript (Claude Code, Codex, Copilot CLI, Open
+// Interpreter, Pi, oh-my-pi, Prime Agent) get a richer feed instead of
+// process events: prompts, tool calls and replies,
 // tailed from the session's JSONL file. That, and the working directory
 // lookup, only runs in `detail` mode — while the activity window is open.
 
@@ -230,7 +231,7 @@ impl Tracker {
             let mut evs: Vec<(u64, Kind, String)> = Vec::new();
             for line in tail.read_new() {
                 if let Some(doc) = json::parse(&line) {
-                    parse_line(v.agent, &doc, now, &mut evs);
+                    parse_line(format_of(v.agent), &doc, now, &mut evs);
                 }
             }
             if seeding && evs.len() > SEED_EVENTS {
@@ -467,11 +468,12 @@ fn locate(env: &Env, v: &Verdict, t: &Track, claimed: &HashSet<PathBuf>) -> Opti
                 .map(|d| d.join("events.jsonl"))
                 .filter(|p| p.is_file())
         }
-        // sessions/YYYY/MM/DD/rollout-*.jsonl; the first line names the cwd.
-        "codex" => {
+        // Dated or per-project JSONL files whose first line names the cwd.
+        _ => {
+            let (env_var, home, depth) = dated_store(v.agent)?;
             let since = agents::started(SystemTime::now(), v.age) - Duration::from_secs(5);
             let mut files = Vec::new();
-            rollouts(&dir_of(env, "CODEX_HOME", ".codex").join("sessions"), 4, since, &mut files);
+            rollouts(&dir_of(env, env_var, home).join("sessions"), depth, since, &mut files);
             files.sort_by_key(|(_, m)| std::cmp::Reverse(*m));
             files
                 .into_iter()
@@ -482,7 +484,29 @@ fn locate(env: &Env, v: &Verdict, t: &Track, claimed: &HashSet<PathBuf>) -> Opti
                     _ => true,
                 })
         }
-        _ => None,
+    }
+}
+
+/// Agents that keep one JSONL file per session under `<root>/sessions`, found
+/// by modification time and the cwd in its header: (env override, home dir,
+/// directory depth).
+fn dated_store(agent: &str) -> Option<(&'static str, &'static str, usize)> {
+    Some(match agent {
+        "codex" => ("CODEX_HOME", ".codex", 4), // YYYY/MM/DD/rollout-*.jsonl
+        "interpreter" => ("INTERPRETER_HOME", ".openinterpreter", 4),
+        "pi" => ("PI_CODING_AGENT_DIR", ".pi/agent", 2), // --<cwd>--/<time>_<id>.jsonl
+        "omp" => ("PI_CODING_AGENT_DIR", ".omp/agent", 2),
+        "prime-agent" => ("PRIME_AGENT_CODING_AGENT_DIR", ".prime/agent", 1),
+        _ => return None,
+    })
+}
+
+/// Which transcript dialect an agent writes (forks share their parent's).
+fn format_of(agent: &str) -> &str {
+    match agent {
+        "interpreter" => "codex",
+        "omp" | "prime-agent" => "pi",
+        a => a,
     }
 }
 
@@ -503,13 +527,14 @@ fn rollouts(dir: &Path, depth: usize, since: SystemTime, out: &mut Vec<(PathBuf,
     }
 }
 
-/// The working directory recorded in a Codex rollout's first line.
+/// The working directory recorded in a session file's first line (Codex:
+/// `payload.cwd`; Pi: `cwd`).
 fn rollout_cwd(path: &Path) -> Option<PathBuf> {
     let mut buf = Vec::new();
     std::fs::File::open(path).ok()?.take(MAX_LINE as u64).read_to_end(&mut buf).ok()?;
     let line = buf.split(|&b| b == b'\n').next()?;
     let doc = json::parse(std::str::from_utf8(line).ok()?)?;
-    doc.get("payload").get("cwd").str().map(PathBuf::from)
+    doc.get("payload").get("cwd").str().or(doc.get("cwd").str()).map(PathBuf::from)
 }
 
 /// "2026-11-19T01:02:23.589Z" -> unix seconds (UTC assumed).
@@ -565,7 +590,7 @@ fn prompt_text(s: &str) -> Option<String> {
     (!s.is_empty() && !s.starts_with('<')).then(|| clean(s, TEXT_MAX))
 }
 
-/// Turn one transcript line into feed events.
+/// Turn one transcript line (in dialect `agent`, see `format_of`) into feed events.
 pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, String)>) {
     let at = doc.get("timestamp").str().and_then(iso_secs).unwrap_or(now);
     let mut add = |kind: Kind, text: String| {
@@ -639,6 +664,38 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
                     }
                     _ => {}
                 },
+                _ => {}
+            }
+        }
+        // {"type":"message","message":{"role":…,"content":[…]}} — Pi and forks.
+        "pi" if kind == "message" => {
+            let m = doc.get("message");
+            let content = m.get("content");
+            match m.get("role").str() {
+                Some("user") => {
+                    if let Some(p) = content.str().and_then(prompt_text) {
+                        add(Kind::Prompt, p);
+                    }
+                    for c in content.arr().iter().filter(|c| c.get("type").str() == Some("text")) {
+                        if let Some(p) = c.get("text").str().and_then(prompt_text) {
+                            add(Kind::Prompt, p);
+                        }
+                    }
+                }
+                Some("assistant") => {
+                    for c in content.arr() {
+                        match c.get("type").str() {
+                            Some("toolCall") => add(
+                                Kind::Tool,
+                                tool_text(c.get("name").str().unwrap_or("tool"), c.get("arguments")),
+                            ),
+                            Some("text") => {
+                                add(Kind::Reply, clean(c.get("text").str().unwrap_or(""), TEXT_MAX))
+                            }
+                            _ => {}
+                        }
+                    }
+                }
                 _ => {}
             }
         }

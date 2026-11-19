@@ -69,8 +69,12 @@ the last one goes idle. Each session is counted separately.
 Recognized agents: **Claude Code**, **Codex**, **GitHub Copilot CLI**,
 **Gemini CLI**, **opencode**, **Cursor CLI**, **Aider**, **Goose**, **Amp**,
 **Qwen Code**, **Crush**, **Factory Droid**, **Auggie**, **Kiro / Amazon Q**,
-**Cline**, **Kilo Code**, **OpenHands**, **Continue**, gptme, Plandex and
-Codebuff. Agents running in **VS Code** (Copilot chat, Cline, Roo Code),
+**Cline**, **Kilo Code**, **OpenHands**, **Continue**, **DeepSeek Harness**,
+**Pi**, **oh-my-pi**, **Open Interpreter**, **Codewhale**, **Reasonix**,
+**Deep Agents Code**, **Grok Build / Grok CLI**, **Prime Agent**, **jcode**,
+**MiMo Code**, **Kimi Code**, **ForgeCode**, **Mistral Vibe**, **Junie**,
+**Hermes Agent**, **Roo Code CLI**, **Letta Code**, **Command Code**,
+Trae Agent, SWE-agent, gptme, Plandex and Codebuff. Agents running in **VS Code** (Copilot chat, Cline, Roo Code),
 **Cursor**, **Windsurf** and **Zed** are watched through their session storage.
 
 A session counts as working when the agent reports it as busy (Claude Code),
@@ -89,8 +93,9 @@ Click the list button in the popover to open the **Agent activity** window: ever
 running agent session, whether it's working (and why), its project, the commands
 it's running right now, and a live feed of what it has been up to.
 
-- **Claude Code**, **Codex** and **Copilot CLI** — prompts, tool calls and replies,
-  read from the session's own transcript.
+- **Claude Code**, **Codex**, **Copilot CLI**, **Open Interpreter**, **Pi**,
+  **oh-my-pi** and **Prime Agent** — prompts, tool calls and replies, read from
+  the session's own transcript.
 - **Every other agent** — when it starts and stops working, and the commands it
   launches (builds, tests, git…), seen in the process table.
 
