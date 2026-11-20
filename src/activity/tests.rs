@@ -46,8 +46,14 @@ fn texts(t: &Tracker, kind: Kind) -> Vec<String> {
 
 fn events_of(agent: &str, line: &str) -> Vec<(Kind, String)> {
     let mut out = Vec::new();
-    parse_line(agent, &json::parse(line).unwrap(), 7, &mut out);
+    parse_line(agent, &json::parse(line).unwrap(), 7, &mut out, &mut Vec::new());
     out.into_iter().map(|(_, k, t)| (k, t)).collect()
+}
+
+fn files_of(agent: &str, line: &str) -> Vec<(Access, String)> {
+    let mut files = Vec::new();
+    parse_line(agent, &json::parse(line).unwrap(), 7, &mut Vec::new(), &mut files);
+    files.into_iter().map(|(_, a, p)| (a, p)).collect()
 }
 
 #[test]
@@ -68,7 +74,7 @@ fn claude_transcript_lines() {
         {"type":"tool_use","name":"Read","input":{"file_path":"/src/main.rs"}},
         {"type":"tool_use","name":"TodoList","input":{}}]}}"#;
     let mut out = Vec::new();
-    parse_line("claude", &json::parse(line).unwrap(), 7, &mut out);
+    parse_line("claude", &json::parse(line).unwrap(), 7, &mut out, &mut Vec::new());
     assert_eq!(out[0], (1795050143, Kind::Reply, "Running the tests now.".into()));
     assert_eq!(out[1].2, "Bash: cargo test");
     assert_eq!(out[2].2, "Read: /src/main.rs");
@@ -127,6 +133,64 @@ fn pi_transcript_lines() {
     let result = r#"{"type":"message","message":{"role":"toolResult","toolName":"bash","content":[{"type":"text","text":"out"}]}}"#;
     assert!(events_of("pi", result).is_empty());
     assert!(events_of("pi", r#"{"type":"session","version":3,"cwd":"/x"}"#).is_empty());
+}
+
+#[test]
+fn file_uses_from_tool_calls() {
+    use Access::{Read, Write};
+    let f = |a: Access, p: &str| (a, p.to_string());
+    // Claude Code: file tools carry a path; searches and shell commands don't count.
+    let claude = r#"{"type":"assistant","message":{"content":[
+        {"type":"tool_use","name":"Read","input":{"file_path":"/p/a.rs"}},
+        {"type":"tool_use","name":"Edit","input":{"file_path":"/p/a.rs","old_string":"x","new_string":"y"}},
+        {"type":"tool_use","name":"Write","input":{"file_path":"/p/new.rs","content":"…"}},
+        {"type":"tool_use","name":"NotebookEdit","input":{"notebook_path":"/p/n.ipynb"}},
+        {"type":"tool_use","name":"Grep","input":{"pattern":"x","path":"/p"}},
+        {"type":"tool_use","name":"Bash","input":{"command":"cat /p/b.rs"}}]}}"#;
+    assert_eq!(
+        files_of("claude", claude),
+        [f(Read, "/p/a.rs"), f(Write, "/p/a.rs"), f(Write, "/p/new.rs"), f(Write, "/p/n.ipynb")]
+    );
+    // Codex: patches, as a custom tool, a function call, or through the shell.
+    let custom = r#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"apply_patch","input":"*** Begin Patch\n*** Update File: src/a.rs\n@@\n-x\n+y\n*** Add File: b.rs\n+z\n*** End Patch"}}"#;
+    assert_eq!(files_of("codex", custom), [f(Write, "src/a.rs"), f(Write, "b.rs")]);
+    let func = r#"{"type":"response_item","payload":{"type":"function_call","name":"apply_patch","arguments":"{\"input\":\"*** Begin Patch\\n*** Delete File: old.rs\\n*** End Patch\"}"}}"#;
+    assert_eq!(files_of("codex", func), [f(Write, "old.rs")]);
+    let shell = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"apply_patch\",\"*** Begin Patch\\n*** Update File: c.rs\\n*** End Patch\"]}"}}"#;
+    assert_eq!(files_of("codex", shell), [f(Write, "c.rs")]);
+    let plain = r#"{"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"command\":[\"bash\",\"-lc\",\"cat a.rs\"]}"}}"#;
+    assert!(files_of("codex", plain).is_empty());
+    // Copilot CLI and Pi.
+    let view = r#"{"type":"tool.execution_start","data":{"toolName":"view","arguments":{"path":"/p/a.rs"}}}"#;
+    assert_eq!(files_of("copilot", view), [f(Read, "/p/a.rs")]);
+    let editor = r#"{"type":"tool.execution_start","data":{"toolName":"str_replace_editor","arguments":{"command":"str_replace","path":"/p/a.rs"}}}"#;
+    assert_eq!(files_of("copilot", editor), [f(Write, "/p/a.rs")]);
+    let pi = r#"{"type":"message","message":{"role":"assistant","content":[
+        {"type":"toolCall","name":"read","arguments":{"path":"a.rs"}},
+        {"type":"toolCall","name":"write","arguments":{"path":"b.rs","content":"…"}}]}}"#;
+    assert_eq!(files_of("pi", pi), [f(Read, "a.rs"), f(Write, "b.rs")]);
+}
+
+#[test]
+fn files_are_counted_per_session() {
+    let mut t = Track { cwd: Some("/proj".into()), ..Track::default() };
+    t.touch(10, Access::Read, "src/a.rs");
+    t.touch(30, Access::Write, "/proj/src/a.rs");
+    t.touch(20, Access::Read, "./b.rs");
+    assert_eq!(
+        t.files,
+        [
+            FileUse { path: "/proj/src/a.rs".into(), reads: 1, writes: 1, at: 30 },
+            FileUse { path: "/proj/b.rs".into(), reads: 1, writes: 0, at: 20 },
+        ]
+    );
+    // Over the cap, the oldest read-only file goes first; modified ones stay.
+    for i in 0..MAX_FILES as u64 {
+        t.touch(100 + i, Access::Read, &format!("/x/{i}"));
+    }
+    assert_eq!(t.files.len(), MAX_FILES);
+    assert!(t.files.iter().any(|f| f.path == "/proj/src/a.rs"));
+    assert!(!t.files.iter().any(|f| f.path == "/proj/b.rs" || f.path == "/x/0"));
 }
 
 #[test]
@@ -233,7 +297,15 @@ fn claude_transcript_is_followed() {
             "{{\"type\":\"assistant\",\"timestamp\":\"2026-11-19T01:02:23Z\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{{\"command\":\"{cmd}\"}}}}]}}}}\n"
         )
     };
-    let old: String = (0..SEED_EVENTS + 5).map(|i| tool(&format!("old {i}"))).collect();
+    let file = |name: &str, path: &str| {
+        format!(
+            "{{\"type\":\"assistant\",\"timestamp\":\"2026-11-19T01:02:23Z\",\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"name\":\"{name}\",\"input\":{{\"file_path\":\"{path}\"}}}}]}}}}\n"
+        )
+    };
+    // A file read before the history shown in the feed still counts.
+    let old: String = std::iter::once(file("Read", "/Users/u/proj/src/lib.rs"))
+        .chain((0..SEED_EVENTS + 5).map(|i| tool(&format!("old {i}"))))
+        .collect();
     write(&log, &old);
 
     let mut d = Detector::new(env.clone());
@@ -262,7 +334,10 @@ fn claude_transcript_is_followed() {
     step(&mut d, &mut t);
     assert_eq!(texts(&t, Kind::Tool).last().unwrap(), "Bash: cargo test");
     append(&log, &half[40..]);
+    append(&log, &file("Edit", "src/lib.rs"));
     let report = step(&mut d, &mut t);
+    assert_eq!(texts(&t, Kind::Tool).pop().unwrap(), "Edit: src/lib.rs");
+    t.events.pop_back();
     assert_eq!(texts(&t, Kind::Tool).last().unwrap(), "Bash: git status");
     assert_eq!(texts(&t, Kind::Tool).len(), SEED_EVENTS + 2);
     // Tool calls come from the transcript, so the processes aren't repeated.
@@ -274,6 +349,10 @@ fn claude_transcript_is_followed() {
     assert_eq!(s.get("cwd").str(), Some("/Users/u/proj"));
     assert_eq!(s.get("log"), &Value::Bool(true));
     assert_eq!(s.get("running").arr()[0].get("cmd").str(), Some("make"));
+    let files = s.get("files").arr();
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].get("p").str(), Some("/Users/u/proj/src/lib.rs"));
+    assert_eq!((files[0].get("r"), files[0].get("w")), (&Value::Num(1.0), &Value::Num(1.0)));
 }
 
 #[test]

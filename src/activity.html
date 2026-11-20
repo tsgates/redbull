@@ -44,6 +44,12 @@ main{flex:1;display:flex;min-height:0}
 .ev.prompt .x:before{content:'› ';color:#5b8def}
 .ev.proc .x:before{content:'$ ';color:#6e6e76}
 .ev.reply .x{color:#d6d6da}
+#tabs{display:flex;align-items:center;gap:10px;padding:0 16px 8px;flex:none}
+#tabs .hint{color:#6e6e76;font-size:11.5px}
+.fl .x{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:rtl;text-align:left}
+.fl .fa{flex:none;color:#8e8e93;font-size:11.5px;white-space:nowrap}
+.bd{flex:none;width:16px;height:16px;border-radius:4px;font-size:10px;font-weight:700;line-height:16px;text-align:center;align-self:center;background:rgba(255,255,255,.1);color:#a9a9ad}
+.bd.w{background:#d98a2b;color:#1e1e22}
 .empty{color:#8e8e93;padding:28px 16px;text-align:center}
 .note{color:#6e6e76;font-size:11.5px;padding:8px 0}
 </style></head><body>
@@ -54,14 +60,14 @@ main{flex:1;display:flex;min-height:0}
 </header>
 <main>
 <div id="list"></div>
-<div id="detail"><div id="head"></div><div id="run"></div><div id="feed"></div></div>
+<div id="detail"><div id="head"></div><div id="run"></div><div id="tabs"><div class="seg"><button id="vFeed" class="on">Activity</button><button id="vFiles">Files</button></div><span class="hint" id="hint"></span></div><div id="feed"></div></div>
 </main>
 <script>
 var NAMES={claude:'Claude Code',codex:'Codex',copilot:'Copilot CLI',gemini:'Gemini CLI',opencode:'opencode','cursor-agent':'Cursor CLI',aider:'Aider',goose:'Goose',amp:'Amp',qwen:'Qwen Code',crush:'Crush',droid:'Droid',auggie:'Auggie',kiro:'Kiro',cline:'Cline',kilo:'Kilo Code',openhands:'OpenHands','continue':'Continue',dsh:'DeepSeek Harness',pi:'Pi',omp:'oh-my-pi',interpreter:'Open Interpreter',codewhale:'Codewhale',reasonix:'Reasonix',deepagents:'Deep Agents Code',grok:'Grok',
 'prime-agent':'Prime Agent',jcode:'jcode',mimo:'MiMo Code',kimi:'Kimi Code',forge:'ForgeCode',vibe:'Mistral Vibe',junie:'Junie',hermes:'Hermes Agent',roo:'Roo Code',letta:'Letta Code','command-code':'Command Code',trae:'Trae Agent',sweagent:'SWE-agent',gptme:'gptme',plandex:'Plandex',codebuff:'Codebuff',
 vscode:'VS Code',cursor:'Cursor',windsurf:'Windsurf',zed:'Zed'};
 var WHY={status:'reports busy',store:'writing transcript',tty:'terminal output',cpu:'heavy CPU',tool:'running a tool'};
-var D={now:0,sessions:[],events:[]},sel=0,onlyWork=false,feedKey='';
+var D={now:0,sessions:[],events:[]},sel=0,onlyWork=false,feedKey='',view='feed';
 var $=function(id){return document.getElementById(id)};
 function post(m){try{window.webkit.messageHandlers.rb.postMessage(m);}catch(e){}}
 function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
@@ -110,7 +116,35 @@ function renderHead(){
   $('head').innerHTML=h;$('run').innerHTML=r;
 }
 
+function fileList(){
+  var out=[];
+  D.sessions.forEach(function(s){if(!sel||s.pid==sel)(s.files||[]).forEach(function(f){out.push({s:s,f:f})})});
+  out.sort(function(a,b){return (b.f.t-a.f.t)||(a.f.p<b.f.p?-1:1)});
+  return out;
+}
+function times(n,word){return word+(n>1?' ×'+n:'')}
+function renderFiles(fs){
+  var key='f:'+sel+':'+fs.map(function(x){return x.s.pid+x.f.p+x.f.r+'.'+x.f.w+'.'+x.f.t}).join('|');
+  if(key==feedKey)return;feedKey=key;
+  var h='';
+  fs.forEach(function(x){
+    var f=x.f,who='',did=[];
+    if(f.w)did.push(times(f.w,'modified'));if(f.r)did.push(times(f.r,'read'));
+    if(!sel)who='<span class="who" data-pid="'+x.s.pid+'" title="'+esc(nm(x.s.agent)+' · pid '+x.s.pid)+'">'+esc(title(x.s))+'</span>';
+    h+='<div class="ev fl"><span class="tm">'+clock(f.t)+'</span>'+who+'<span class="bd'+(f.w?' w':'')+'">'+(f.w?'M':'R')+'</span>'
+      +'<span class="x mono" title="'+esc(f.p)+'"><bdi>'+esc(short(f.p,x.s))+'</bdi></span><span class="fa">'+did.join(' · ')+'</span></div>';
+  });
+  var s=sel?byPid(sel):null;
+  if(!fs.length)h='<div class="empty">'+(s&&!s.log?'File access is only known for agents with a readable transcript':'No files read or modified yet')+'</div>';
+  else h+='<div class="note">From the agent\'s own file tools and patches. Files touched only by shell commands are not listed.</div>';
+  $('feed').innerHTML=h;
+}
+
 function renderFeed(){
+  var fs=fileList(),nw=0;fs.forEach(function(x){if(x.f.w)nw++});
+  $('vFiles').textContent='Files'+(fs.length?' '+fs.length:'');
+  $('hint').textContent=fs.length?nw+' modified · '+(fs.length-nw)+' read only':'';
+  if(view=='files')return renderFiles(fs);
   var ev=D.events.filter(function(e){return !sel||e.p==sel});
   var key=sel+':'+ev.length+':'+(ev.length?ev[ev.length-1].q:0)+':'+(sel?'':D.sessions.map(title).join('|'));
   if(key==feedKey)return;feedKey=key;
@@ -133,6 +167,8 @@ window.rbActivity=function(d){D=d;render()};
 $('list').addEventListener('click',function(e){var r=e.target.closest('.row');if(r)pick(+r.dataset.pid)});
 $('feed').addEventListener('click',function(e){var w=e.target.closest('.who');if(w&&w.dataset.pid)pick(+w.dataset.pid)});
 function filt(w){onlyWork=w;$('fAll').className=w?'':'on';$('fWork').className=w?'on':'';renderList()}
+function show(v){view=v;feedKey='';$('vFeed').className=v=='feed'?'on':'';$('vFiles').className=v=='files'?'on':'';renderFeed();$('feed').scrollTop=0}
+$('vFeed').onclick=function(){show('feed')};$('vFiles').onclick=function(){show('files')};
 $('fAll').onclick=function(){filt(false)};$('fWork').onclick=function(){filt(true)};
 document.addEventListener('keydown',function(e){if(e.metaKey&&e.key=='w'){e.preventDefault();post('activity:close')}if(e.key=='Escape')pick(0)});
 render();

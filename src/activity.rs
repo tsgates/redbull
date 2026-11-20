@@ -13,6 +13,10 @@
 // process events: prompts, tool calls and replies,
 // tailed from the session's JSONL file. That, and the working directory
 // lookup, only runs in `detail` mode — while the activity window is open.
+//
+// The same tool calls say which files a session read and which it modified
+// (its Read/Edit/Write-style tools and patches); that list is kept per
+// session. Files touched only through shell commands aren't seen.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{Read, Seek, SeekFrom};
@@ -31,14 +35,16 @@ const NEW_SECS: u64 = 15;
 /// Transcript events shown from before we started watching a session.
 const SEED_EVENTS: usize = 12;
 /// How far back to look for those.
-const SEED_BYTES: u64 = 256 * 1024;
+const SEED_BYTES: u64 = 2 * 1024 * 1024;
 /// Most transcript bytes read in one go; anything older is skipped.
-const MAX_READ: u64 = 1024 * 1024;
+const MAX_READ: u64 = 2 * 1024 * 1024;
 /// Transcript lines longer than this (huge tool results) are skipped.
 const MAX_LINE: usize = 512 * 1024;
 /// Retry finding a session's transcript every this many scans.
 const LOCATE_EVERY: u32 = 5;
 const TEXT_MAX: usize = 160;
+/// Files remembered per session; read-only ones are forgotten first.
+pub const MAX_FILES: usize = 60;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -71,6 +77,21 @@ pub struct Event {
     pub text: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+}
+
+/// A file a session's tools have touched.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FileUse {
+    pub path: String,
+    pub reads: u32,
+    pub writes: u32,
+    pub at: u64, // last touched, unix seconds
+}
+
 /// A command a session is running right now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Running {
@@ -91,6 +112,43 @@ struct Track {
     session: Option<String>, // the agent's own session id, when known
     tail: Option<Tail>,
     lookups: u32,
+    files: Vec<FileUse>,
+}
+
+impl Track {
+    fn touch(&mut self, at: u64, access: Access, path: &str) {
+        // Relative paths are relative to the session's working directory.
+        let path = match &self.cwd {
+            Some(cwd) if !path.starts_with('/') && !path.starts_with('~') => {
+                cwd.join(path.trim_start_matches("./")).to_string_lossy().into_owned()
+            }
+            _ => path.to_string(),
+        };
+        let i = match self.files.iter().position(|f| f.path == path) {
+            Some(i) => i,
+            None => {
+                if self.files.len() >= MAX_FILES {
+                    let oldest = |fs: &[FileUse], ro: bool| {
+                        fs.iter()
+                            .enumerate()
+                            .filter(|(_, f)| !ro || f.writes == 0)
+                            .min_by_key(|(_, f)| f.at)
+                            .map(|(i, _)| i)
+                    };
+                    let drop = oldest(&self.files, true).or_else(|| oldest(&self.files, false));
+                    self.files.swap_remove(drop.unwrap_or(0));
+                }
+                self.files.push(FileUse { path, reads: 0, writes: 0, at: 0 });
+                self.files.len() - 1
+            }
+        };
+        let f = &mut self.files[i];
+        match access {
+            Access::Read => f.reads += 1,
+            Access::Write => f.writes += 1,
+        }
+        f.at = f.at.max(at);
+    }
 }
 
 #[derive(Default)]
@@ -229,10 +287,14 @@ impl Tracker {
             let Some(tail) = t.tail.as_mut() else { continue };
             let seeding = !tail.seeded;
             let mut evs: Vec<(u64, Kind, String)> = Vec::new();
+            let mut files: Vec<(u64, Access, String)> = Vec::new();
             for line in tail.read_new() {
                 if let Some(doc) = json::parse(&line) {
-                    parse_line(format_of(v.agent), &doc, now, &mut evs);
+                    parse_line(format_of(v.agent), &doc, now, &mut evs, &mut files);
                 }
+            }
+            for (at, access, path) in files {
+                t.touch(at, access, &path);
             }
             if seeding && evs.len() > SEED_EVENTS {
                 evs.drain(..evs.len() - SEED_EVENTS);
@@ -278,6 +340,17 @@ impl Tracker {
                 }
                 o.push_str(&format!("{{\"age\":{},\"cmd\":", r.age));
                 json::quote(&mut o, &r.cmd);
+                o.push('}');
+            }
+            o.push_str("],\"files\":[");
+            let mut files: Vec<&FileUse> = t.files.iter().collect();
+            files.sort_by(|a, b| b.at.cmp(&a.at).then(a.path.cmp(&b.path)));
+            for (j, f) in files.iter().enumerate() {
+                if j > 0 {
+                    o.push(',');
+                }
+                o.push_str(&format!("{{\"r\":{},\"w\":{},\"t\":{},\"p\":", f.reads, f.writes, f.at));
+                json::quote(&mut o, &f.path);
                 o.push('}');
             }
             o.push_str("]}");
@@ -583,6 +656,42 @@ fn tool_text(name: &str, input: &Value) -> String {
     }
 }
 
+/// The files a tool call touches, judged by the tool's name and arguments:
+/// patches name their files in the patch text, file tools in a path argument.
+/// `raw` is the call's input when it's free text rather than JSON.
+fn file_uses(name: &str, input: &Value, raw: Option<&str>, out: &mut Vec<(Access, String)>) {
+    const PATCH: [&str; 4] = ["*** Update File: ", "*** Add File: ", "*** Delete File: ", "*** Move to: "];
+    let texts = [
+        raw.map(str::to_string),
+        input.get("input").str().map(str::to_string),
+        input.get("patch").str().map(str::to_string),
+        command_text(input.get("command")),
+        command_text(input.get("cmd")),
+    ];
+    for text in texts.iter().flatten().filter(|t| t.contains("*** ")) {
+        for line in text.lines() {
+            if let Some(p) = PATCH.iter().find_map(|tag| line.strip_prefix(tag)) {
+                let p = p.trim();
+                if !p.is_empty() && !out.iter().any(|(_, q)| q == p) {
+                    out.push((Access::Write, p.to_string()));
+                }
+            }
+        }
+    }
+    let access = match name.to_ascii_lowercase().as_str() {
+        "read" | "read_file" | "view" | "view_file" | "cat" | "notebookread" => Access::Read,
+        "edit" | "multiedit" | "write" | "notebookedit" | "create" | "create_file" | "write_file"
+        | "edit_file" | "replace" | "str_replace" | "insert" | "str_replace_based_edit_tool" => Access::Write,
+        "str_replace_editor" if input.get("command").str() == Some("view") => Access::Read,
+        "str_replace_editor" => Access::Write,
+        _ => return,
+    };
+    const KEYS: [&str; 6] = ["file_path", "path", "notebook_path", "filePath", "target_file", "file"];
+    if let Some(p) = KEYS.iter().find_map(|k| input.get(k).str()).map(str::trim).filter(|p| !p.is_empty()) {
+        out.push((access, p.to_string()));
+    }
+}
+
 /// Something a person typed, as opposed to context the harness injected
 /// (`<system-reminder>`, `<environment_context>`, …).
 fn prompt_text(s: &str) -> Option<String> {
@@ -590,9 +699,21 @@ fn prompt_text(s: &str) -> Option<String> {
     (!s.is_empty() && !s.starts_with('<')).then(|| clean(s, TEXT_MAX))
 }
 
-/// Turn one transcript line (in dialect `agent`, see `format_of`) into feed events.
-pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, String)>) {
+/// Turn one transcript line (in dialect `agent`, see `format_of`) into feed
+/// events, plus the files its tool calls touch.
+pub fn parse_line(
+    agent: &str,
+    doc: &Value,
+    now: u64,
+    out: &mut Vec<(u64, Kind, String)>,
+    files: &mut Vec<(u64, Access, String)>,
+) {
     let at = doc.get("timestamp").str().and_then(iso_secs).unwrap_or(now);
+    let mut touch = |name: &str, input: &Value, raw: Option<&str>| {
+        let mut uses = Vec::new();
+        file_uses(name, input, raw, &mut uses);
+        files.extend(uses.into_iter().map(|(a, p)| (at, a, p)));
+    };
     let mut add = |kind: Kind, text: String| {
         if !text.is_empty() {
             out.push((at, kind, text));
@@ -606,10 +727,11 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
                 "assistant" => {
                     for c in content.arr() {
                         match c.get("type").str() {
-                            Some("tool_use") => add(
-                                Kind::Tool,
-                                tool_text(c.get("name").str().unwrap_or("tool"), c.get("input")),
-                            ),
+                            Some("tool_use") => {
+                                let name = c.get("name").str().unwrap_or("tool");
+                                touch(name, c.get("input"), None);
+                                add(Kind::Tool, tool_text(name, c.get("input")));
+                            }
                             Some("text") => {
                                 add(Kind::Reply, clean(c.get("text").str().unwrap_or(""), TEXT_MAX))
                             }
@@ -645,6 +767,7 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
                     let name = p.get("name").str().unwrap_or("tool");
                     // `arguments` is itself a JSON document, as a string.
                     let args = p.get("arguments").str().and_then(json::parse);
+                    touch(name, args.as_ref().unwrap_or(&Value::Null), p.get("input").str());
                     let text = match (&args, p.get("input").str()) {
                         (Some(a), _) => tool_text(name, a),
                         (None, Some(raw)) => format!("{name}: {}", clean(raw, TEXT_MAX - 20)),
@@ -653,6 +776,7 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
                     add(Kind::Tool, text);
                 }
                 Some("local_shell_call") => {
+                    touch("shell", p.get("action"), None);
                     add(Kind::Tool, tool_text("shell", p.get("action")));
                 }
                 Some("message") => match p.get("role").str() {
@@ -685,10 +809,11 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
                 Some("assistant") => {
                     for c in content.arr() {
                         match c.get("type").str() {
-                            Some("toolCall") => add(
-                                Kind::Tool,
-                                tool_text(c.get("name").str().unwrap_or("tool"), c.get("arguments")),
-                            ),
+                            Some("toolCall") => {
+                                let name = c.get("name").str().unwrap_or("tool");
+                                touch(name, c.get("arguments"), None);
+                                add(Kind::Tool, tool_text(name, c.get("arguments")));
+                            }
                             Some("text") => {
                                 add(Kind::Reply, clean(c.get("text").str().unwrap_or(""), TEXT_MAX))
                             }
@@ -702,10 +827,11 @@ pub fn parse_line(agent: &str, doc: &Value, now: u64, out: &mut Vec<(u64, Kind, 
         "copilot" => {
             let d = doc.get("data");
             match kind {
-                "tool.execution_start" => add(
-                    Kind::Tool,
-                    tool_text(d.get("toolName").str().unwrap_or("tool"), d.get("arguments")),
-                ),
+                "tool.execution_start" => {
+                    let name = d.get("toolName").str().unwrap_or("tool");
+                    touch(name, d.get("arguments"), None);
+                    add(Kind::Tool, tool_text(name, d.get("arguments")));
+                }
                 "user.message" => add(Kind::Prompt, clean(d.get("content").str().unwrap_or(""), TEXT_MAX)),
                 "assistant.message" => {
                     add(Kind::Reply, clean(d.get("content").str().unwrap_or(""), TEXT_MAX))

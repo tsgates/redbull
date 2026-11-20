@@ -99,6 +99,9 @@ it's running right now, and a live feed of what it has been up to.
 - **Every other agent** — when it starts and stops working, and the commands it
   launches (builds, tests, git…), seen in the process table.
 
+The **Files** tab lists what those sessions read and modified, taken from
+their file tools and patches (files touched only by shell commands aren't seen).
+
 Pick a session for its own feed, or stay on *All activity* for everything at
 once. Redbull only reads these files, locally, and only while the window is open;
 nothing leaves your Mac. The same data as JSON:
