@@ -284,6 +284,161 @@ pub fn registry() -> Vec<Agent> {
             stores: vec![],
             gui: false,
         },
+        Agent {
+            name: "dsh", // DeepSeek Harness
+            bins: &["dsh"],
+            paths: &["@deepseek-ai/dsh/"],
+            stores: vec![home_dirs("DSH_HOME", ".dsh", "sessions", 3)],
+            gui: false,
+        },
+        Agent {
+            name: "pi", // sets its process title to "pi"
+            bins: &["pi"],
+            paths: &["@earendil-works/pi-coding-agent/", "/.pi/agent/bin/"],
+            stores: vec![home("PI_CODING_AGENT_DIR", ".pi/agent", "sessions", 2)],
+            gui: false,
+        },
+        Agent {
+            name: "omp", // oh-my-pi
+            bins: &["omp"],
+            paths: &["@oh-my-pi/pi-coding-agent/"],
+            stores: vec![home("PI_CODING_AGENT_DIR", ".omp/agent", "sessions", 2)],
+            gui: false,
+        },
+        Agent {
+            name: "interpreter", // Open Interpreter (a Codex fork)
+            bins: &["interpreter"],
+            paths: &["/.openinterpreter/packages/"],
+            stores: vec![home("INTERPRETER_HOME", ".openinterpreter", "sessions", 4)],
+            gui: false,
+        },
+        Agent {
+            name: "codewhale",
+            bins: &["codewhale", "codew"],
+            paths: &["/codewhale/bin/"],
+            stores: vec![home("CODEWHALE_HOME", ".codewhale", "sessions", 2)],
+            gui: false,
+        },
+        Agent {
+            name: "reasonix",
+            bins: &["reasonix"],
+            paths: &["/reasonix/bin/", "@reasonix/cli-"],
+            stores: vec![
+                // A session is a group of files sharing a stem: one key per project.
+                home_dirs("REASONIX_HOME", ".reasonix", "projects/*/sessions", 1),
+                home_dirs("REASONIX_HOME", ".reasonix", "sessions", 1),
+            ],
+            gui: false,
+        },
+        Agent {
+            name: "deepagents", // LangChain Deep Agents Code
+            bins: &["dcode", "deepagents-code"],
+            paths: &["/uv/tools/deepagents-code/"],
+            stores: vec![home_only("DEEPAGENTS_HOME", ".deepagents", ".state", "sessions.db")],
+            gui: false,
+        },
+        Agent {
+            // xAI's Grok Build and the community Grok CLI share `~/.grok/bin/grok`.
+            name: "grok",
+            bins: &["grok"],
+            paths: &["/.grok/bin/", "/.grok/downloads/", "@xai-official/grok/", "/grok-dev/"],
+            stores: vec![
+                home_dirs("GROK_HOME", ".grok", "sessions", 3), // Grok Build
+                home_only("", ".grok", "", "grok.db"),          // Grok CLI
+            ],
+            gui: false,
+        },
+        Agent {
+            name: "prime-agent",
+            bins: &["prime-agent"],
+            paths: &[],
+            stores: vec![home("PRIME_AGENT_CODING_AGENT_DIR", ".prime/agent", "sessions", 1)],
+            gui: false,
+        },
+        Agent {
+            name: "jcode",
+            bins: &["jcode"],
+            paths: &[],
+            stores: vec![home("JCODE_HOME", ".jcode", "sessions", 1)],
+            gui: false,
+        },
+        Agent {
+            name: "mimo", // Xiaomi MiMo Code (an opencode fork)
+            bins: &["mimo"],
+            paths: &["@mimo-ai/cli/", "/.mimocode/bin/"],
+            stores: vec![home_only("XDG_DATA_HOME", ".local/share", "mimocode", "mimocode")],
+            gui: false,
+        },
+        Agent {
+            name: "kimi", // sets its process title to "kimi-code"
+            bins: &["kimi", "kimi-code", "kimi-cli"],
+            paths: &["@moonshot-ai/kimi-code/", "/.kimi-code/bin/", "/uv/tools/kimi-cli/"],
+            stores: vec![
+                home_dirs("KIMI_CODE_HOME", ".kimi-code", "sessions", 5),
+                home_dirs("KIMI_SHARE_DIR", ".kimi", "sessions", 3), // legacy Python CLI
+            ],
+            gui: false,
+        },
+        Agent {
+            // The binary is `forge`, like Foundry's: only ForgeCode's own install
+            // locations and its npm package's native binary are matched.
+            name: "forge",
+            bins: &["forge-aarch64-apple-darwin", "forge-x86_64-apple-darwin"],
+            paths: &["/.local/bin/forge", "/forgecode/bin/"],
+            stores: vec![home_only("FORGE_CONFIG", ".forge", "", ".forge.db")],
+            gui: false,
+        },
+        Agent {
+            name: "vibe", // Mistral Vibe: `vibe` execs the bundled `vibe-rs`
+            bins: &["vibe-rs"],
+            paths: &["/uv/tools/mistral-vibe/", "/vibe/_bin/"],
+            stores: vec![home_dirs("VIBE_HOME", ".vibe", "logs/session/unified", 3)],
+            gui: false,
+        },
+        Agent {
+            name: "junie",
+            bins: &["junie"],
+            paths: &["@jetbrains/junie/"],
+            stores: vec![home("JUNIE_HOME", ".junie", "sessions", 2)],
+            gui: false,
+        },
+        Agent {
+            // Runs as `python3 -I -c "…hermes_cli.main…"` ("hermes" with setproctitle).
+            name: "hermes",
+            bins: &["hermes"],
+            paths: &["hermes_cli.main"],
+            stores: vec![home_only("HERMES_HOME", ".hermes", "", "state.db")],
+            gui: false,
+        },
+        Agent {
+            name: "roo", // Roo Code CLI
+            bins: &["roo"],
+            paths: &["/.roo/cli/"],
+            stores: vec![home_dirs("", ".vscode-mock", "global-storage/tasks", 2)],
+            gui: false,
+        },
+        Agent {
+            name: "letta", // Letta Code
+            bins: &["letta"],
+            paths: &["@letta-ai/letta-code/", "/letta_code/_payload/"],
+            stores: vec![home("LETTA_CONFIG_DIR", ".letta", "transcripts", 3)],
+            gui: false,
+        },
+        Agent {
+            name: "command-code", // sets its process title to "command-code"
+            bins: &["command-code", "commandcode", "cmdc"],
+            paths: &["/node_modules/command-code/"],
+            stores: vec![home("", ".commandcode", "projects", 2)],
+            gui: false,
+        },
+        Agent {
+            name: "trae", // ByteDance Trae Agent
+            bins: &["trae-cli"],
+            paths: &[],
+            stores: vec![Store::Cwd { rel: "trajectories", depth: 1, filter: "trajectory_" }],
+            gui: false,
+        },
+        Agent { name: "sweagent", bins: &["sweagent"], paths: &[], stores: vec![], gui: false },
         // --- editors (agent runs inside the editor's extension host) ---
         Agent {
             name: "vscode",
@@ -371,7 +526,13 @@ pub fn identify(agents: &[Agent], comm: &str, cmd: &str) -> Option<usize> {
                 }
             }
         }
-        return script_of(cmd).and_then(find);
+        if let Some(i) = script_of(cmd).and_then(find) {
+            return Some(i);
+        }
+        // Inline code (`python -c "…import hermes_cli.main…"`): launchers that
+        // leave no script path are matched by their agent's path patterns.
+        let code = cmd.split_once(" -c ").map(|(_, code)| code)?;
+        return agents.iter().position(|a| a.paths.iter().any(|p| code.contains(p)));
     }
     None
 }
@@ -526,7 +687,7 @@ impl Env {
             vars: std::env::vars().collect(),
         }
     }
-    fn var(&self, k: &str) -> Option<&str> {
+    pub fn var(&self, k: &str) -> Option<&str> {
         if k.is_empty() {
             return None;
         }
@@ -638,17 +799,19 @@ fn has_tool_child(agents: &[Agent], inst: &Instance, procs: &HashMap<i32, Proc>)
 }
 
 /// Whether a session path has a component naming project dir `cwd` the way
-/// Claude Code, droid and qwen do ("/Users/me/my.proj" -> "-Users-me-my-proj").
+/// Claude Code, droid, qwen and pi do ("/Users/me/my.proj" -> "-Users-me-my-proj").
 fn names_project(key: &Path, cwd: &Path) -> bool {
     let enc = |s: &str| -> String {
         s.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect()
     };
+    // Pi and DeepSeek Harness wrap the name in dashes ("--Users-me-proj--").
     let want = enc(&cwd.to_string_lossy());
-    want.len() > 1 && key.iter().any(|c| enc(&c.to_string_lossy()) == want)
+    let want = want.trim_matches('-');
+    !want.is_empty() && key.iter().any(|c| enc(&c.to_string_lossy()).trim_matches('-') == want)
 }
 
 /// When a process started, from its age in seconds.
-fn started(wall: SystemTime, age: u64) -> SystemTime {
+pub fn started(wall: SystemTime, age: u64) -> SystemTime {
     wall - Duration::from_secs(age)
 }
 
@@ -680,7 +843,7 @@ pub fn tty_age(tty: &str) -> Option<u64> {
 
 /// Working directories of the given pids (via lsof; used only for agents with
 /// project-local stores).
-fn cwds(pids: &[i32]) -> HashMap<i32, PathBuf> {
+pub fn cwds(pids: &[i32]) -> HashMap<i32, PathBuf> {
     let mut map = HashMap::new();
     if pids.is_empty() {
         return map;
@@ -723,6 +886,9 @@ pub struct Verdict {
     pub status: Option<bool>,
     pub tty_age: Option<u64>,
     pub cores: f64,
+    pub age: u64,       // seconds since the session's root process started
+    pub pids: Vec<i32>, // the session's process subtree (root included)
+    pub gui: bool,      // editor host rather than a CLI agent
 }
 
 #[derive(Default)]
@@ -835,6 +1001,9 @@ impl Detector {
                 status,
                 tty_age,
                 cores,
+                age: inst.age,
+                pids: inst.pids.clone(),
+                gui: agent.gui,
             });
         }
 

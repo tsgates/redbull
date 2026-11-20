@@ -146,6 +146,119 @@ fn id_continue() {
 }
 
 #[test]
+fn id_dsh() {
+    assert_id("dsh", "node", &format!("node {NM}/@deepseek-ai/dsh/lib/bin.js web"));
+    assert_id("dsh", "node", "node /opt/homebrew/bin/dsh");
+}
+
+#[test]
+fn id_pi_family() {
+    assert_id("pi", "pi", "pi"); // process.title
+    assert_id("pi", "node", &format!("node {NM}/@earendil-works/pi-coding-agent/dist/bundle/cli.js"));
+    assert_id("pi", "/Users/u/.pi/agent/bin/pi", "/Users/u/.pi/agent/bin/pi");
+    assert_id("omp", "/Users/u/.local/bin/omp", "omp");
+    assert_id("omp", "bun", "bun /Users/u/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent/src/cli.ts");
+    assert_id("prime-agent", "/Users/u/.local/share/prime-agent/prime-agent", "prime-agent");
+}
+
+#[test]
+fn id_interpreter() {
+    assert_id("interpreter", "/Users/u/.local/bin/interpreter", "interpreter");
+    let p = "/Users/u/.openinterpreter/packages/standalone/current/bin/interpreter";
+    assert_id("interpreter", p, p);
+}
+
+#[test]
+fn id_codewhale_reasonix() {
+    assert_id("codewhale", "/Users/u/.local/bin/codewhale", "codewhale");
+    assert_id("codewhale", "/Users/u/.local/bin/codew", "codew");
+    assert_id("codewhale", "node", &format!("node {NM}/codewhale/bin/codewhale.js"));
+    assert_id("codewhale", &format!("{NM}/codewhale/bin/downloads/codewhale"), "codewhale");
+    assert_id("reasonix", "/opt/homebrew/bin/reasonix", "reasonix");
+    assert_id("reasonix", "node", &format!("node {NM}/reasonix/bin/reasonix.js"));
+    assert_id("reasonix", &format!("{NM}/@reasonix/cli-darwin-arm64/bin/reasonix"), "reasonix");
+}
+
+#[test]
+fn id_deepagents() {
+    let py = "/Users/u/.local/share/uv/tools/deepagents-code/bin/python";
+    assert_id("deepagents", py, &format!("{py} /Users/u/.local/bin/dcode"));
+    assert_id("deepagents", py, &format!("{py} /Users/u/.local/bin/deepagents-code"));
+}
+
+#[test]
+fn id_grok() {
+    assert_id("grok", "/Users/u/.grok/bin/grok", "grok");
+    assert_id("grok", "/Users/u/.grok/bin/agent", "agent");
+    assert_id("grok", "/Users/u/.grok/downloads/grok-darwin-arm64", "grok");
+    assert_id("grok", "bun", &format!("bun {NM}/grok-dev/dist/index.js"));
+    assert_id("grok", "node", &format!("node {NM}/@xai-official/grok/bin/grok-bootstrap.js"));
+}
+
+#[test]
+fn id_jcode_mimo_kimi() {
+    assert_id("jcode", "/Users/u/.local/bin/jcode", "jcode");
+    assert_id("mimo", "/Users/u/.mimocode/bin/mimo", "mimo");
+    assert_id("mimo", "node", &format!("node {NM}/@mimo-ai/cli/mimo.js"));
+    assert_id("mimo", &format!("{NM}/@mimo-ai/cli/vendor/mimo"), "mimo");
+    assert_id("kimi", "/Users/u/.kimi-code/bin/kimi", "kimi");
+    assert_id("kimi", "kimi-code", "kimi-code"); // process.title
+    assert_id("kimi", "node", &format!("node {NM}/@moonshot-ai/kimi-code/dist/main.mjs"));
+    let py = "/Users/u/.local/share/uv/tools/kimi-cli/bin/python";
+    assert_id("kimi", py, &format!("{py} /Users/u/.local/bin/kimi"));
+}
+
+#[test]
+fn id_forge_is_not_foundry() {
+    assert_id("forge", "/Users/u/.local/bin/forge", "forge");
+    let native = format!("{NM}/forgecode/bin/darwin/arm64/forge-aarch64-apple-darwin");
+    assert_id("forge", &native, &native);
+    // Foundry's `forge` (Solidity) is a build tool, not an agent.
+    assert_eq!(name_of("/Users/u/.foundry/bin/forge", "forge build"), None);
+    assert_eq!(name_of("/opt/homebrew/bin/forge", "forge test"), None);
+}
+
+#[test]
+fn id_vibe_junie() {
+    let v = "/Users/u/.local/share/uv/tools/mistral-vibe/lib/python3.14/site-packages/vibe/_bin/vibe-rs";
+    assert_id("vibe", v, v);
+    let py = "/Users/u/.local/share/uv/tools/mistral-vibe/bin/python";
+    assert_id("vibe", py, &format!("{py} /Users/u/.local/bin/vibe-app-server"));
+    let j = "/Users/u/.local/share/junie/versions/1.2.3/Applications/junie.app/Contents/MacOS/junie";
+    assert_id("junie", j, j);
+    assert_id("junie", "node", &format!("node {NM}/@jetbrains/junie/bin/index.js"));
+}
+
+#[test]
+fn id_hermes() {
+    let py = "/Users/u/.hermes/store/bin/python3";
+    let code = "import os, sys, runpy; sys.path.insert(0, '/Users/u/.hermes/hermes-agent'); import hermes_bootstrap; runpy.run_module('hermes_cli.main', run_name='__main__')";
+    assert_id("hermes", py, &format!("{py} -I -c {code}"));
+    assert_id("hermes", "hermes", "hermes"); // setproctitle
+    assert_eq!(name_of("python3", "python3 -c print(1)"), None);
+    assert_eq!(name_of("/bin/zsh", "/bin/zsh -c hermes_cli.main"), None);
+}
+
+#[test]
+fn id_roo_letta_command_code() {
+    assert_id("roo", "node", "node /Users/u/.local/bin/roo");
+    assert_id("roo", "node", "node /Users/u/.roo/cli/bin/roo");
+    assert_id("letta", "node", &format!("node {NM}/@letta-ai/letta-code/letta.js"));
+    assert_id("letta", "node", "node /opt/homebrew/bin/letta");
+    let n = "/Users/u/.local/share/uv/tools/letta/lib/python3.13/site-packages/letta_code/_payload/bin/node";
+    assert_id("letta", n, &format!("{n} /x/letta_code/_payload/app/letta.js"));
+    assert_id("command-code", "command-code", "command-code"); // process.title
+    assert_id("command-code", "node", &format!("node {NM}/command-code/dist/index.mjs"));
+}
+
+#[test]
+fn id_trae_sweagent() {
+    let py = "/Users/u/src/trae-agent/.venv/bin/python3";
+    assert_id("trae", py, &format!("{py} /Users/u/src/trae-agent/.venv/bin/trae-cli run task"));
+    assert_id("sweagent", "python3.12", "python3.12 /Users/u/.venv/bin/sweagent run");
+}
+
+#[test]
 fn id_editors() {
     let c = "/Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)";
     assert_id("vscode", c, c);
@@ -179,6 +292,9 @@ fn every_agent_has_an_identification_test() {
         "claude", "codex", "copilot", "gemini", "opencode", "cursor-agent", "aider", "goose",
         "amp", "qwen", "crush", "droid", "auggie", "kiro", "cline", "kilo", "openhands",
         "continue", "gptme", "plandex", "codebuff", "vscode", "cursor", "windsurf", "zed",
+        "dsh", "pi", "omp", "interpreter", "codewhale", "reasonix", "deepagents", "grok",
+        "prime-agent", "jcode", "mimo", "kimi", "forge", "vibe", "junie", "hermes", "roo",
+        "letta", "command-code", "trae", "sweagent",
     ];
     for a in registry() {
         assert!(tested.contains(&a.name), "no test for {}", a.name);
@@ -351,6 +467,33 @@ fn store_opencode() {
 fn store_cursor_agent() {
     check_store("cursor-agent", "cursor-agent", ".cursor/chats/0cc175b9/5e7a/store.db-wal");
 }
+#[test]
+fn store_new_cli_agents() {
+    check_store("dsh", "dsh", ".dsh/sessions/--Users-u-proj--/s1/session.v4.jsonl.zstd");
+    check_store("pi", "pi", ".pi/agent/sessions/--Users-u-proj--/2026-11-01T10-00-00-000Z_ab.jsonl");
+    check_store("omp", "omp", ".omp/agent/sessions/-proj/2026-11-01_ab.jsonl");
+    check_store("interpreter", "interpreter", ".openinterpreter/sessions/2026/11/01/rollout-2026-11-01T10-00-00-abc.jsonl");
+    check_store("codewhale", "codewhale", ".codewhale/sessions/s1.json");
+    check_store("codewhale", "codewhale", ".codewhale/sessions/checkpoints/s1.json");
+    check_store("reasonix", "reasonix", ".reasonix/projects/-Users-u-proj/sessions/20261101-100000.1-m.events.jsonl");
+    check_store("reasonix", "reasonix", ".reasonix/sessions/20261101-100000.1-m.events.jsonl");
+    check_store("dcode", "dcode", ".deepagents/.state/sessions.db-wal");
+    check_store("grok", "grok", ".grok/sessions/%2FUsers%2Fu%2Fproj/0193-aa/updates.jsonl");
+    check_store("grok", "grok", ".grok/grok.db-wal");
+    check_store("prime-agent", "prime-agent", ".prime/agent/sessions/s1.jsonl");
+    check_store("jcode", "jcode", ".jcode/sessions/s1.journal.jsonl");
+    check_store("mimo", "mimo", ".local/share/mimocode/mimocode.db-wal");
+    check_store("kimi", "kimi", ".kimi-code/sessions/wd_proj_0123456789ab/s1/agents/main/wire.jsonl");
+    check_store("kimi", "kimi", ".kimi/sessions/d41d8cd9/s1/wire.jsonl");
+    check_store("forge-aarch64-apple-darwin", "forge", ".forge/.forge.db-wal");
+    check_store("vibe-rs", "vibe-rs", ".vibe/logs/session/unified/s1/journal/0000000000000001.jsonl");
+    check_store("junie", "junie", ".junie/sessions/session-261101-100000-ab12/events.jsonl");
+    check_store("hermes", "hermes", ".hermes/state.db-wal");
+    check_store("roo", "roo", ".vscode-mock/global-storage/tasks/t1/history_item.json");
+    check_store("letta", "letta", ".letta/transcripts/agent-1/conv-1/transcript.jsonl");
+    check_store("command-code", "command-code", ".commandcode/projects/proj/s1.jsonl");
+}
+
 #[test]
 fn store_goose() {
     check_store("goose", "goose", ".local/share/goose/sessions/sessions.db-wal");

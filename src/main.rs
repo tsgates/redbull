@@ -7,6 +7,9 @@
 //
 // JS -> Rust: the web view posts "set:<index>" / "quit" via a script message
 // handler. Rust -> JS: refresh() pushes the live countdown via evaluateJavaScript.
+//
+// A second web view, in an ordinary window, shows what each coding agent is
+// doing (activity.rs); the popover's list button opens it.
 
 use std::cell::RefCell;
 use std::process::{Child, Command};
@@ -17,8 +20,9 @@ use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{define_class, msg_send, sel, AllocAnyThread, DefinedClass, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSCellImagePosition, NSFont, NSFontWeightRegular,
-    NSImage, NSPopover, NSPopoverBehavior, NSStatusBar, NSStatusItem, NSVariableStatusItemLength,
-    NSView, NSViewController,
+    NSAppearance, NSAppearanceNameDarkAqua, NSBackingStoreType, NSImage, NSPopover,
+    NSPopoverBehavior, NSStatusBar, NSStatusItem, NSVariableStatusItemLength, NSView,
+    NSViewController, NSWindow, NSWindowStyleMask,
 };
 use objc2_foundation::{
     MainThreadMarker, NSData, NSPoint, NSRect, NSRectEdge, NSSize, NSString, NSTimer,
@@ -32,15 +36,19 @@ use objc2_web_kit::{
 const SECS: [u64; 7] = [0, 15 * 60, 60 * 60, 2 * 3600, 3 * 3600, 6 * 3600, 12 * 3600];
 const STOPS: usize = 8; // Off, 15m, 1h, 2h, 3h, 6h, 12h, ∞
 
-const POPOVER_W: f64 = 264.0;
+const POPOVER_W: f64 = 296.0;
 const POPOVER_H: f64 = 116.0;
 
 // --- Agent auto-watch ---------------------------------------------------------
 // Detection lives in agents.rs; the monitor samples it every few seconds.
+mod activity;
 mod agents;
+mod json;
 
 /// Seconds between agent scans (each costs two `ps` calls plus a few stats).
 const SCAN_SECS: u64 = 5;
+/// …and while the activity window is open, so it feels live.
+const WATCH_SECS: u64 = 2;
 
 struct AppState {
     child: Option<Child>,
@@ -51,6 +59,7 @@ struct AppState {
     working: usize, // agent sessions currently working
     present: bool,  // any known agent process is running at all
     detector: agents::Detector,
+    tracker: activity::Tracker,
     last_scan: Option<Instant>,
 }
 
@@ -64,6 +73,7 @@ impl Default for AppState {
             working: 0,
             present: false,
             detector: agents::Detector::new(agents::Env::from_process()),
+            tracker: activity::Tracker::new(),
             last_scan: None,
         }
     }
@@ -74,6 +84,8 @@ struct Ivars {
     status_item: Retained<NSStatusItem>,
     popover: Retained<NSPopover>,
     webview: Retained<WKWebView>,
+    window: Retained<NSWindow>,    // agent activity
+    actview: Retained<WKWebView>, // its content
     _vc: Retained<NSViewController>,
     mtm: MainThreadMarker,
 }
@@ -104,7 +116,7 @@ define_class!(
 
         #[unsafe(method(tick:))]
         fn tick(&self, _timer: Option<&AnyObject>) {
-            let auto = {
+            {
                 let mut st = self.ivars().state.borrow_mut();
                 if let Some(c) = st.child.as_mut() {
                     if matches!(c.try_wait(), Ok(Some(_))) {
@@ -113,11 +125,8 @@ define_class!(
                         st.index = 0;
                     }
                 }
-                st.auto
-            };
-            if auto {
-                self.monitor();
             }
+            self.monitor();
             self.refresh();
         }
     }
@@ -136,6 +145,10 @@ define_class!(
                     self.set_auto(true);
                 } else if cmd == "auto:0" {
                     self.set_auto(false);
+                } else if cmd == "activity" {
+                    self.open_activity();
+                } else if cmd == "activity:close" {
+                    self.ivars().window.orderOut(None);
                 } else if let Some(n) = cmd.strip_prefix("set:") {
                     if let Ok(i) = n.parse::<usize>() {
                         self.apply(i.min(STOPS - 1));
@@ -153,8 +166,10 @@ impl Controller {
         {
             let mut st = self.ivars().state.borrow_mut();
             let st = &mut *st;
+            if st.auto {
+                st.detector.reset(); // (otherwise it only feeds the activity window)
+            }
             st.auto = false;
-            st.detector.reset();
             st.working = 0;
             st.present = false;
             st.index = i;
@@ -176,7 +191,9 @@ impl Controller {
             stop(&mut st.child, &mut st.expiry); // hand control to the monitor
             st.index = 0;
             st.auto = on;
-            st.detector.reset();
+            if !self.ivars().window.isVisible() {
+                st.detector.reset(); // start from a fresh baseline
+            }
             st.last_scan = None;
             st.working = 0;
             st.present = false;
@@ -187,25 +204,60 @@ impl Controller {
         self.refresh();
     }
 
-    /// Auto-watch step: every SCAN_SECS, sample the agent detector. Keep the
-    /// Mac awake while any agent session is working, and for a grace period
-    /// after the last one goes idle (see agents.rs for the signals).
+    /// Show the agent activity window.
+    fn open_activity(&self) {
+        let iv = self.ivars();
+        if iv.popover.isShown() {
+            unsafe { iv.popover.performClose(None) };
+        }
+        if !iv.window.isVisible() {
+            let mut st = iv.state.borrow_mut();
+            if !st.auto {
+                st.tracker = activity::Tracker::new(); // nobody was watching: start over
+            }
+            st.last_scan = None;
+        }
+        #[allow(deprecated)] // `activate` needs macOS 14
+        NSApplication::sharedApplication(iv.mtm).activateIgnoringOtherApps(true);
+        iv.window.makeKeyAndOrderFront(None);
+        self.monitor();
+    }
+
+    /// Agent scan, every SCAN_SECS in auto mode (WATCH_SECS while the activity
+    /// window is open; not at all otherwise). In auto mode it keeps the Mac
+    /// awake while any agent session is working, and for a grace period after
+    /// the last one goes idle (see agents.rs for the signals).
     fn monitor(&self) {
-        let mut st = self.ivars().state.borrow_mut();
+        let iv = self.ivars();
+        let watching = iv.window.isVisible();
+        let mut st = iv.state.borrow_mut();
         let st = &mut *st;
-        if st.last_scan.is_some_and(|t| t.elapsed().as_secs() < SCAN_SECS) {
+        if !st.auto && !watching {
+            return;
+        }
+        let every = if watching { WATCH_SECS } else { SCAN_SECS };
+        if st.last_scan.is_some_and(|t| t.elapsed().as_secs() < every) {
             return;
         }
         st.last_scan = Some(Instant::now());
-        let report = st.detector.step();
+        let procs = agents::ps_table();
+        let report = st.detector.step_with(&procs, std::process::id() as i32);
+        st.tracker.update(&st.detector.agents, &st.detector.env, &report, &procs, watching);
         st.working = report.working();
         st.present = !report.verdicts.is_empty();
 
-        let keep = st.detector.keep_awake();
-        if keep && st.child.is_none() {
-            start(&mut st.child, &mut st.expiry, None); // indefinite while working
-        } else if !keep && st.child.is_some() {
-            stop(&mut st.child, &mut st.expiry);
+        if st.auto {
+            let keep = st.detector.keep_awake();
+            if keep && st.child.is_none() {
+                start(&mut st.child, &mut st.expiry, None); // indefinite while working
+            } else if !keep && st.child.is_some() {
+                stop(&mut st.child, &mut st.expiry);
+            }
+        }
+        if watching {
+            let snap = st.tracker.snapshot(&report, st.auto, st.child.is_some());
+            let js = format!("window.rbActivity&&rbActivity({snap})");
+            unsafe { iv.actview.evaluateJavaScript_completionHandler(&ns(&js), None) };
         }
     }
 
@@ -271,10 +323,12 @@ fn ns(s: &str) -> Retained<NSString> {
 fn main() {
     // Debug: `redbull scan [secs]` samples agents twice and reports, per
     // session, each signal and whether it counts as working.
-    if std::env::args().nth(1).as_deref() == Some("scan") {
-        let gap = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(2.0);
-        scan(gap);
-        return;
+    // `redbull activity [secs]` prints what the activity window would show.
+    let gap = std::env::args().nth(2).and_then(|s| s.parse().ok()).unwrap_or(2.0);
+    match std::env::args().nth(1).as_deref() {
+        Some("scan") => return scan(gap),
+        Some("activity") => return dump_activity(gap),
+        _ => {}
     }
 
     let mtm = MainThreadMarker::new().expect("must run on the main thread");
@@ -283,6 +337,10 @@ fn main() {
 
     let controller = build_controller(mtm);
     controller.refresh();
+    // Debug builds: `REDBULL_ACTIVITY=1 cargo run` opens the activity window.
+    if cfg!(debug_assertions) && std::env::var_os("REDBULL_ACTIVITY").is_some() {
+        controller.open_activity();
+    }
 
     let target: &AnyObject = &controller;
     unsafe {
@@ -326,11 +384,42 @@ fn build_controller(mtm: MainThreadMarker) -> Retained<Controller> {
     popover.setContentSize(NSSize::new(POPOVER_W, POPOVER_H));
     popover.setContentViewController(Some(&vc));
 
+    // --- Agent activity window (shown on demand) ---------------------------
+    let act_config = unsafe { WKWebViewConfiguration::new(mtm) };
+    let act_ucc = unsafe { act_config.userContentController() };
+    let rect = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(860.0, 540.0));
+    let actview =
+        unsafe { WKWebView::initWithFrame_configuration(WKWebView::alloc(mtm), rect, &act_config) };
+    unsafe { actview.loadHTMLString_baseURL(&ns(ACTIVITY_HTML), None) };
+    let style = NSWindowStyleMask::Titled
+        | NSWindowStyleMask::Closable
+        | NSWindowStyleMask::Miniaturizable
+        | NSWindowStyleMask::Resizable;
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            rect,
+            style,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    unsafe { window.setReleasedWhenClosed(false) }; // closing just hides it
+    window.setTitle(&ns("Agent activity"));
+    window.setContentMinSize(NSSize::new(600.0, 320.0));
+    window.setContentView(Some(&actview));
+    window.center();
+    if let Some(dark) = NSAppearance::appearanceNamed(unsafe { NSAppearanceNameDarkAqua }) {
+        let _: () = unsafe { msg_send![&*window, setAppearance: &*dark] };
+    }
+
     let ivars = Ivars {
         state: RefCell::new(AppState::default()),
         status_item: status_item.clone(),
         popover,
         webview,
+        window,
+        actview,
         _vc: vc,
         mtm,
     };
@@ -340,6 +429,7 @@ fn build_controller(mtm: MainThreadMarker) -> Retained<Controller> {
     // Wire JS -> Rust message handler and the status-button click.
     let handler = ProtocolObject::from_ref(&*controller);
     unsafe { ucc.addScriptMessageHandler_name(handler, &ns("rb")) };
+    unsafe { act_ucc.addScriptMessageHandler_name(handler, &ns("rb")) };
 
     let target: &AnyObject = &controller;
     if let Some(button) = status_item.button(mtm) {
@@ -406,6 +496,22 @@ fn scan(gap_secs: f64) {
         );
     }
     println!("working: {}", report.working());
+}
+
+fn dump_activity(gap_secs: f64) {
+    let mut d = agents::Detector::new(agents::Env::from_process());
+    let mut t = activity::Tracker::new();
+    let me = std::process::id() as i32;
+    let mut sample = |d: &mut agents::Detector| {
+        let procs = agents::ps_table();
+        let report = d.step_with(&procs, me);
+        t.update(&d.agents, &d.env, &report, &procs, true);
+        report
+    };
+    sample(&mut d);
+    std::thread::sleep(Duration::from_secs_f64(gap_secs));
+    let report = sample(&mut d);
+    println!("{}", t.snapshot(&report, false, false));
 }
 
 /// Remaining-time label whose resolution sharpens as the timer winds down:
@@ -534,6 +640,8 @@ fn adler32(data: &[u8]) -> u32 {
     (b << 16) | a
 }
 
+const ACTIVITY_HTML: &str = include_str!("activity.html");
+
 // --- Embedded slider UI ------------------------------------------------------
 
 const HTML: &str = r##"<!DOCTYPE html><html><head><meta charset="utf-8"><style>
@@ -546,10 +654,11 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 .pill{margin-left:6px;flex:none;font-size:12px;padding:3px 9px;border-radius:999px;font-weight:600;white-space:nowrap;background:#E24B4A;color:#26262b}
 .name{flex:none}
 .pill.off{background:rgba(255,255,255,.14);color:#cdcdd1}
-.auto{margin-left:auto;width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;padding:0;border:1px solid rgba(255,255,255,.16);background:transparent;color:#a9a9ad;border-radius:7px;cursor:pointer}
+.auto{width:24px;height:24px;flex:none;display:flex;align-items:center;justify-content:center;padding:0;border:1px solid rgba(255,255,255,.16);background:transparent;color:#a9a9ad;border-radius:7px;cursor:pointer}
 .auto:hover{color:#fff;border-color:rgba(255,255,255,.32)}
 .auto.on{background:#E24B4A;border-color:transparent;color:#fff}
 .auto svg{display:block}
+.act{margin-left:auto}
 .auto.on svg{transform-origin:center;animation:rbpulse 1.1s ease-in-out infinite}
 @keyframes rbpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.8)}}
 .x{margin-left:6px;width:20px;height:20px;flex:none;display:flex;align-items:center;justify-content:center;border:none;background:transparent;color:#8e8e93;font-size:16px;line-height:1;cursor:pointer;border-radius:5px;font-family:inherit}
@@ -565,6 +674,8 @@ html,body{background:#26262b;color:#f2f2f4;font-family:-apple-system,BlinkMacSys
 <div class="head">
 <span class="logo"><svg width="13" height="13" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="#fff"/></svg></span>
 <span class="name">Redbull</span>
+<button class="auto act" title="Agent activity: what each coding agent is doing" aria-label="Agent activity" onclick="post('activity')">
+<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6h12M9 12h12M9 18h12"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="4" cy="12" r="1" fill="currentColor"/><circle cx="4" cy="18" r="1" fill="currentColor"/></svg></button>
 <button class="auto" id="auto" title="Keep awake while coding agents (Claude Code, Codex, Copilot, Gemini, Cursor, Aider, …) are working">
 <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 12 7 12 10 5 14 19 17 12 21 12"/></svg></button>
 <span class="pill off" id="pill">Off</span>
